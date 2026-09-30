@@ -1,11 +1,12 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { MentionsService } from '../mentions/mentions.service';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import { agentSnapshot, revisionDiff, SNAPSHOT_FIELDS } from './agent-snapshot';
 
 @Injectable()
 export class AgentRevisionsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly mentions: MentionsService) {}
 
   private async agent(db: Prisma.TransactionClient, organizationId: string, id: string) {
     const agent = await db.aiAgent.findFirst({ where: { id, organizationId, deletedAt: null }, include: { skills: true, draftRevision: true, publishedRevision: true } });
@@ -40,11 +41,14 @@ export class AgentRevisionsService {
     });
   }
 
-  private async validate(db: Prisma.TransactionClient, org: string, id: string, snapshot: any) {
+  private async validate(db: Prisma.TransactionClient, org: string, id: string, snapshot: any, checkMentions = false) {
     for (const field of ['name', 'kind', 'capabilities', 'modelId', 'systemPrompt', 'temperature', 'maxTokens', 'canRespondDirectly', 'isActive']) {
       if (snapshot[field] == null) throw new BadRequestException(`${field} não pode ser nulo`);
     }
     if (!Array.isArray(snapshot.skills)) throw new BadRequestException('Skills devem ser uma lista');
+    // Rascunho pode ter menção inválida (chip vermelho); só a publicação bloqueia.
+    const { invalid } = checkMentions ? await this.mentions.compile(org, String(snapshot.systemPrompt ?? '')) : { invalid: [] };
+    if (invalid.length) throw new BadRequestException(`Menções inválidas no prompt: ${invalid.map(m => '@' + m.label).join(', ')}. Remova ou refaça a menção antes de publicar.`);
     const ids = snapshot.skills.map((s: any) => s.skillId);
     if (new Set(ids).size !== ids.length || await db.aiSkill.count({ where: { id: { in: ids }, organizationId: org, deletedAt: null } }) !== ids.length) throw new BadRequestException('Skills inválidas para esta organização');
     let parent = snapshot.parentAgentId;
@@ -70,7 +74,7 @@ export class AgentRevisionsService {
     return this.locked(org, id, async (db, agent) => {
       if (!agent.draftRevision) throw new BadRequestException('Nenhum rascunho para publicar');
       const snapshot = agent.draftRevision.snapshot;
-      await this.validate(db, org, id, snapshot);
+      await this.validate(db, org, id, snapshot, true);
       if (agent.publishedRevisionId) await db.aiAgentRevision.update({ where: { id: agent.publishedRevisionId }, data: { status: 'ARCHIVED' } });
       const revision = await db.aiAgentRevision.update({ where: { id: agent.draftRevisionId }, data: { status: 'PUBLISHED', publishedAt: new Date(), note } });
       const data: any = Object.fromEntries(SNAPSHOT_FIELDS.map(key => [key, snapshot[key]]));

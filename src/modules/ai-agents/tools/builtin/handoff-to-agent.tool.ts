@@ -43,22 +43,24 @@ export class HandoffToAgentTool implements AiTool {
       await tx.$queryRaw`SELECT id FROM conversations WHERE id = ${ctx.conversationId} FOR UPDATE`;
       const conv = await tx.conversation.findFirst({ where: { id: ctx.conversationId, organizationId: ctx.organizationId,
         channelId: ctx.channelId, contactId: ctx.contactId, deletedAt: null }, include: { channel: true } });
-      if (!conv || conv.aiEnabled === false || !conv.channel.aiAgentGroupId) return { error: 'Conversa sem grupo ou IA pausada' };
+      if (!conv || conv.aiEnabled === false || (!ctx.viaMention && !conv.channel.aiAgentGroupId)) return { error: 'Conversa sem grupo ou IA pausada' };
       const run = await tx.aiAgentRun.findFirst({ where: { id: ctx.runId, agentId: ctx.agentId, conversationId: ctx.conversationId, organizationId: ctx.organizationId }, include: { revision: true } });
       const enabled = (run?.revision?.snapshot as any)?.enabledBuiltinTools;
-      if (!run?.revision || (enabled != null && !enabled.includes(this.name))) return { error: 'Ação não habilitada na revisão deste run' };
+      if (!run?.revision || (!ctx.viaMention && enabled != null && !enabled.includes(this.name))) return { error: 'Ação não habilitada na revisão deste run' };
       const previous = await tx.aiAgentHandoff.findUnique({ where: { id: handoffId } });
       if (previous) {
         const message = await tx.message.findUnique({ where: { id: handoffId } });
         return { handoff: previous, message };
       }
       if (conv.activeAgentId !== ctx.agentId) return { error: 'O agente atual mudou' };
-      const members = await tx.aiAgentGroupMember.findMany({ where: { groupId: conv.channel.aiAgentGroupId,
+      const direct = ctx.viaMention ? await tx.aiAgent.findFirst({ where: { id: String(targetId), organizationId: ctx.organizationId, isActive: true, deletedAt: null, publishedRevisionId: { not: null } }, include: { publishedRevision: true } }) : null;
+      if (ctx.viaMention && (!direct?.publishedRevision || direct.id === ctx.agentId)) return { error: 'Agente mencionado inexistente, inativo ou não publicado' };
+      const members = ctx.viaMention ? [] as any[] : await tx.aiAgentGroupMember.findMany({ where: { groupId: conv.channel.aiAgentGroupId!,
         group: { organizationId: ctx.organizationId }, agentId: { in: [ctx.agentId, targetId] },
         agent: { organizationId: ctx.organizationId, isActive: true, deletedAt: null, publishedRevisionId: { not: null } } },
         include: { agent: { include: { publishedRevision: true } } } });
-      const target = members.find(m => m.agentId === targetId)?.agent;
-      if (members.length !== 2 || !target?.publishedRevision) return { error: 'Origem e destino devem ser membros ativos e publicados do mesmo grupo da conversa' };
+      const target = ctx.viaMention ? direct : members.find(m => m.agentId === targetId)?.agent;
+      if ((!ctx.viaMention && members.length !== 2) || !target?.publishedRevision) return { error: 'Origem e destino devem ser membros ativos e publicados do mesmo grupo da conversa' };
       const history = await tx.aiAgentHandoff.findMany({ where: { conversationId: ctx.conversationId, createdAt: { gte: new Date(Date.now() - 30 * 60_000) } }, orderBy: { createdAt: 'asc' } });
       const inboundHandoffs = ctx.triggerMessageId ? await tx.aiAgentHandoff.count({
         where: { conversationId: ctx.conversationId, triggerMessageId: ctx.triggerMessageId },

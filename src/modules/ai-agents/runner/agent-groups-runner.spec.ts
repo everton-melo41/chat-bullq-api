@@ -53,7 +53,7 @@ describe('continuação de grupos sob mutex', () => {
     expect(f.prisma.aiAgentRun.create).toHaveBeenCalledTimes(2);
     expect(f.isLocked()).toBe(true);
     expect(finished).toBe(false);
-    expect(f.runner.executeToolCalls).toHaveBeenCalledWith(expect.any(Array), expect.objectContaining({ chainDepth: 0 }), expect.any(Map), false, 'WORKER', ['handoffToAgent']);
+    expect(f.runner.executeToolCalls).toHaveBeenCalledWith(expect.any(Array), expect.objectContaining({ chainDepth: 0 }), expect.any(Map), false, 'WORKER', ['handoffToAgent'], expect.any(Map));
     f.releaseDestination(); await work;
     expect(f.isLocked()).toBe(false);
   });

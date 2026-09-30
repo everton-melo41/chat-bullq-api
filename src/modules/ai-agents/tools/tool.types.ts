@@ -6,6 +6,8 @@ import { LlmToolDefinition } from '../llm/llm.types';
  */
 export interface ToolContext {
   chainDepth?: number;
+  /** Chamada originada de uma menção no prompt: destino/ids já validados na compilação. */
+  viaMention?: boolean;
   alreadyReplied?: boolean;
   skillBindings?: { skillId: string; requiresApproval: boolean }[];
   organizationId: string;

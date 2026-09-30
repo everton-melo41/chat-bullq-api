@@ -1,4 +1,5 @@
 import { AgentRevisionsService } from './revisions.service';
+import { MentionsService } from '../mentions/mentions.service';
 import { IsOptional, IsString, MaxLength } from 'class-validator';
 import { ToolRegistry } from '../tools/tool-registry.service';
 import {
@@ -36,7 +37,12 @@ class PublishAgentDto {
 @UseGuards(JwtAuthGuard, OrgGuard, RolesGuard)
 @Controller('ai-agents')
 export class AgentsController {
-  constructor(private readonly service: AgentsService, private readonly registry: ToolRegistry, private readonly revisions: AgentRevisionsService) {}
+  constructor(private readonly service: AgentsService, private readonly registry: ToolRegistry, private readonly revisions: AgentRevisionsService, private readonly mentions: MentionsService) {}
+
+  @Get('mention-options')
+  mentionOptions(@CurrentOrg('id') orgId: string) {
+    return this.mentions.options(orgId);
+  }
 
   @Post()
   @Roles(OrgRole.OWNER, OrgRole.ADMIN)

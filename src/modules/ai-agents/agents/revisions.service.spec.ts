@@ -23,7 +23,7 @@ function fixture() {
     aiAgentSkill: { deleteMany: jest.fn(), createMany: jest.fn() },
   };
   db.$transaction = (fn: any) => fn(db);
-  return { service: new AgentRevisionsService(db), agent, revisions, db };
+  return { service: new AgentRevisionsService(db, { compile: async () => ({ text: "", bindings: [], invalid: [] }) } as any), agent, revisions, db };
 }
 
 describe('agent revisions', () => {

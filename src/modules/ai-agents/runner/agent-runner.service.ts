@@ -1,6 +1,6 @@
 import { IdempotencyService } from '../../messaging/pipeline/idempotency.service';
 import { handoffLimit, MAX_HANDOFF_DEPTH } from '../tools/builtin/handoff-to-agent.tool';
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import {
   AiFinalAction,
   AiRunStatus,
@@ -16,6 +16,7 @@ import { PrismaService } from '../../../database/prisma.service';
 import { LlmService } from '../llm/llm.service';
 import { LlmMessage, LlmToolCall, LlmToolDefinition } from '../llm/llm.types';
 import { ToolRegistry } from '../tools/tool-registry.service';
+import { MentionBinding, MentionsService } from '../mentions/mentions.service';
 import { ToolContext } from '../tools/tool.types';
 import { HttpToolExecutorService } from '../tools/http-tool-executor.service';
 import { SqlToolExecutorService } from '../tools/sql-tool-executor.service';
@@ -118,6 +119,7 @@ export class AiAgentRunnerService {
     @InjectQueue('rag-indexer')
     private readonly ragIndexerQueue: Queue,
     private readonly idempotency: IdempotencyService,
+    @Optional() private readonly mentions?: MentionsService,
   ) {}
 
   async run(input: RunInput): Promise<void> {
@@ -188,6 +190,11 @@ export class AiAgentRunnerService {
     const snapshot = revision.snapshot as any;
     agent = { ...agent, ...snapshot } as NonNullable<typeof agent>;
     const enabledBuiltinTools = snapshot.enabledBuiltinTools as string[] | null;
+    // Menções @[...](tipo:id) no prompt viram ferramentas vinculadas. Com
+    // menções, o agente só enxerga reply + o que foi mencionado (menos tokens).
+    const compiledMentions = this.mentions ? await this.mentions.compile(conversation.organizationId, String(snapshot.systemPrompt ?? '')) : { text: String(snapshot.systemPrompt ?? ''), bindings: [], invalid: [] };
+    const mentionBindings = new Map<string, MentionBinding>(compiledMentions.bindings.map(b => [b.toolName, b]));
+    if (compiledMentions.bindings.length || compiledMentions.invalid.length) agent = { ...agent, systemPrompt: compiledMentions.text } as NonNullable<typeof agent>;
     const skillBindings = snapshot.skills as { skillId: string; requiresApproval: boolean }[];
 
     const [organization, channel, contact, recentMessages, memory, catalog] =
@@ -255,6 +262,10 @@ export class AiAgentRunnerService {
     // runner can hand them to HttpToolExecutor on tool-call time.
     const { llmTools, customSkillsByName, skillInstructions } =
       await this.resolveToolsAndSkills(agent.id, agent.kind, enabledBuiltinTools, skillBindings, conversation.organizationId);
+    if (mentionBindings.size) {
+      const keep = llmTools.filter(t => t.name === 'replyToConversation' || customSkillsByName.has(t.name));
+      llmTools.splice(0, llmTools.length, ...keep, ...[...mentionBindings.values()].map(b => b.definition));
+    }
 
     const receivedHandoff = await this.prisma.aiAgentHandoff.findFirst({
       where: { conversationId: conversation.id }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
@@ -507,6 +518,7 @@ export class AiAgentRunnerService {
           replyAlreadySuccessful,
           agent.kind,
           enabledBuiltinTools,
+          mentionBindings,
         );
 
         for (const result of toolResults) {
@@ -724,6 +736,7 @@ export class AiAgentRunnerService {
     alreadyRepliedFromPriorIteration: boolean,
     agentKind: 'ORCHESTRATOR' | 'WORKER' = 'WORKER',
     enabledBuiltinTools?: string[] | null,
+    mentionBindings?: Map<string, MentionBinding>,
   ): Promise<
     Array<{
       toolCallId: string;
@@ -803,7 +816,24 @@ export class AiAgentRunnerService {
         errorMessage = undefined;
         try {
           const customSkill = customSkillsByName.get(call.name);
-          if (customSkill && customSkill.tool) {
+          const mention = mentionBindings?.get(call.name);
+          if (mention) {
+            if (mention.builtin === 'disableAi') {
+              await this.prisma.$transaction([
+                this.prisma.conversation.update({ where: { id: ctx.conversationId }, data: { aiEnabled: false, activeAgentId: null } }),
+                this.prisma.internalNote.create({ data: { conversationId: ctx.conversationId, content: `IA desativada pelo agente: ${String(call.arguments?.motivo ?? 'sem motivo')}`, generatedByAi: true, agentId: ctx.agentId, agentRunId: ctx.runId } }),
+              ]);
+              output = { ok: true };
+              finalAction = 'TRANSFERRED_TO_HUMAN';
+            } else {
+              const result = await this.registry.get(mention.builtin).execute(
+                { ...(call.arguments ?? {}), ...mention.fixedArgs },
+                { ...ctx, viaMention: true, alreadyReplied: alreadyRepliedFromPriorIteration || repliedInThisBatch },
+              );
+              output = result.output;
+              finalAction = result.finalAction;
+            }
+          } else if (customSkill && customSkill.tool) {
             const result =
               customSkill.source === 'SQL'
                 ? await this.sqlExecutor.execute(
