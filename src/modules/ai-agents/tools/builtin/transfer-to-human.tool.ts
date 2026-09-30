@@ -1,3 +1,5 @@
+import { PrismaService } from '../../../../database/prisma.service';
+import { StudioActionsService } from './studio-actions.service';
 import { Injectable, Logger } from '@nestjs/common';
 import { RealtimeGateway } from '../../../realtime/realtime.gateway';
 import { PendingActionService } from '../../confirmations/pending-action.service';
@@ -20,12 +22,14 @@ export class TransferToHumanTool implements AiTool {
 
   readonly name = 'transferToHuman';
   readonly description =
-    'Hand the conversation over to a human agent. Use this when: the request is outside your competence, the customer explicitly asks for a person, the situation is sensitive (complaint, refund, anger), or you are uncertain. The conversation will move to the queue and AI will be paused.';
+    'Transfere para atendimento humano, pausa a IA e registra motivo/resumo. Pode indicar userId OU departmentId do mesmo canal. Exige aprovação por padrão; execução direta somente quando a política do agente permitir.';
   readonly parameters = {
     type: 'object',
     additionalProperties: false,
     required: ['reason'],
     properties: {
+      userId: { type: 'string' },
+      departmentId: { type: 'string' },
       reason: {
         type: 'string',
         description:
@@ -43,6 +47,8 @@ export class TransferToHumanTool implements AiTool {
   };
 
   constructor(
+    private readonly prisma: PrismaService,
+    private readonly actions: StudioActionsService,
     private readonly realtime: RealtimeGateway,
     private readonly pendingActions: PendingActionService,
   ) {}
@@ -53,6 +59,12 @@ export class TransferToHumanTool implements AiTool {
   ): Promise<ToolResult> {
     const reason = String(input.reason ?? '').trim() || 'Handoff sem motivo informado';
     const summary = input.summary ? String(input.summary).trim() : null;
+
+    await this.actions.assertContext(ctx);
+    const agent = await this.prisma.aiAgent.findUniqueOrThrow({ where: { id: ctx.agentId }, select: { modelParams: true } });
+    const policy = agent.modelParams as Record<string, unknown> | null;
+    const args = { reason, summary, ...(input.userId ? { userId: String(input.userId) } : {}), ...(input.departmentId ? { departmentId: String(input.departmentId) } : {}) };
+    if (policy?.transferRequiresApproval === false) return this.actions.execute(this.name, args, ctx);
 
     const preview = {
       action: `Transferir conversa pro atendimento humano: ${reason}`,
@@ -71,7 +83,7 @@ export class TransferToHumanTool implements AiTool {
       conversationId: ctx.conversationId,
       agentId: ctx.agentId,
       toolName: this.name,
-      args: { reason, summary },
+      args,
       preview,
     });
 
@@ -97,13 +109,14 @@ export class TransferToHumanTool implements AiTool {
     return {
       output: {
         ok: true,
-        status: 'queued_for_processing',
+        status: 'awaiting_approval',
+        requiresUserAction: true,
         pendingActionId: action.id,
         preview,
         message:
-          'Transferência registrada com sucesso. Atendente humano vai assumir em instantes — fluxo padrão, não é erro.',
+          'Solicitação de transferência registrada e aguardando revisão da equipe.',
         agent_should_say:
-          'Avise o cliente, com naturalidade, que um atendente humano vai continuar o atendimento agora. NÃO mencione "aprovação", "operador", "PendingAction" ou qualquer detalhe interno.',
+          'Informe que solicitou atendimento humano. Não diga que alguém já assumiu a conversa.',
       },
       // Mantém o sinal de "saí do loop" — o agent deve parar de responder
       // até o operador decidir. Sem isso o LLM seguiria conversando como

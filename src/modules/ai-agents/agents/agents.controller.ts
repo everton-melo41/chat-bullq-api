@@ -1,3 +1,4 @@
+import { ToolRegistry } from '../tools/tool-registry.service';
 import {
   Body,
   Controller,
@@ -27,7 +28,7 @@ import {
 @UseGuards(JwtAuthGuard, OrgGuard, RolesGuard)
 @Controller('ai-agents')
 export class AgentsController {
-  constructor(private readonly service: AgentsService) {}
+  constructor(private readonly service: AgentsService, private readonly registry: ToolRegistry) {}
 
   @Post()
   @Roles(OrgRole.OWNER, OrgRole.ADMIN)
@@ -95,6 +96,12 @@ export class AgentsController {
   })
   watchdogStats(@CurrentOrg('id') orgId: string) {
     return this.service.watchdogStats(orgId);
+  }
+
+  @Get(':id/built-in-actions')
+  async builtInActions(@CurrentOrg('id') orgId: string, @Param('id') id: string) {
+    const agent = await this.service.findOne(orgId, id);
+    return this.registry.getLlmDefinitionsForKind(agent.kind, agent.id).map(({ name, description }) => ({ name, description }));
   }
 
   @Get(':id/skills')

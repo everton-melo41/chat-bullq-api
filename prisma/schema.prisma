@@ -629,7 +629,10 @@ model ConversationAuditLog {
 model InternalNote {
   id             String   @id @default(cuid())
   conversationId String   @map("conversation_id")
-  authorId       String   @map("author_id")
+  authorId       String?  @map("author_id")
+  agentId        String?  @map("agent_id")
+  agentRunId     String?  @map("agent_run_id")
+  generatedByAi  Boolean  @default(false) @map("generated_by_ai")
   content        String
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
@@ -1772,4 +1775,16 @@ model AutomationRun {
   @@index([traceId], name: "idx_run_trace")
   @@index([status, startedAt(sort: Desc)], name: "idx_run_status_time")
   @@map("automation_runs")
+}
+
+
+// Atomic receipt for built-in writes. Key includes run, action and canonical arguments.
+model AiActionReceipt {
+  id String @id
+  agentRunId String @map("agent_run_id")
+  action String
+  result Json
+  createdAt DateTime @default(now()) @map("created_at")
+  @@index([agentRunId])
+  @@map("ai_action_receipts")
 }

@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { CardStatus, PipelineStageType } from '@prisma/client';
+import { CardStatus, PipelineStageType, Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import {
@@ -224,14 +224,17 @@ export class PipelinesService {
     pipelineId: string,
     organizationId: string,
     dto: CreateCardDto,
+    transaction?: Prisma.TransactionClient,
+    afterCommit?: Array<() => void>,
   ) {
+    const db = transaction ?? this.prisma;
     await this.assertPipeline(pipelineId, organizationId);
 
     // Cards represent conversations entering the pipeline. If the same
     // conversation is already in this pipeline (any stage), reject — the
     // operator should move/edit the existing card instead of duplicating.
     if (dto.conversationId) {
-      const existing = await this.prisma.card.findFirst({
+      const existing = await db.card.findFirst({
         where: { pipelineId, conversationId: dto.conversationId },
         select: { id: true, stageId: true },
       });
@@ -245,7 +248,7 @@ export class PipelinesService {
     // If conversationId provided, hydrate title/contactId from the conv
     // so the operator doesn't need to retype the contact name.
     if (dto.conversationId) {
-      const conv = await this.prisma.conversation.findUnique({
+      const conv = await db.conversation.findUnique({
         where: { id: dto.conversationId },
         select: {
           id: true,
@@ -268,14 +271,14 @@ export class PipelinesService {
     // Resolve stage: explicit → use it; else first stage of the pipeline.
     let stageId = dto.stageId;
     if (!stageId) {
-      const first = await this.prisma.pipelineStage.findFirst({
+      const first = await db.pipelineStage.findFirst({
         where: { pipelineId },
         orderBy: { order: 'asc' },
       });
       if (!first) throw new BadRequestException('Pipeline sem stages');
       stageId = first.id;
     } else {
-      const stage = await this.prisma.pipelineStage.findUnique({
+      const stage = await db.pipelineStage.findUnique({
         where: { id: stageId },
       });
       if (!stage || stage.pipelineId !== pipelineId) {
@@ -283,7 +286,7 @@ export class PipelinesService {
       }
     }
 
-    const max = await this.prisma.card.findFirst({
+    const max = await db.card.findFirst({
       where: { pipelineId, stageId },
       orderBy: { order: 'desc' },
       select: { order: true },
@@ -296,7 +299,7 @@ export class PipelinesService {
       );
     }
 
-    const card = await this.prisma.card.create({
+    const card = await db.card.create({
       data: {
         organizationId,
         pipelineId,
@@ -316,7 +319,8 @@ export class PipelinesService {
       },
     });
 
-    this.realtime.emitToOrg(organizationId, 'card:created', { card });
+    const emit = () => this.realtime.emitToOrg(organizationId, 'card:created', { card });
+    if (afterCommit) afterCommit.push(emit); else emit();
     return card;
   }
 
@@ -383,12 +387,15 @@ export class PipelinesService {
     cardId: string,
     organizationId: string,
     dto: MoveCardDto,
+    transaction?: Prisma.TransactionClient,
+    afterCommit?: Array<() => void>,
   ) {
-    const card = await this.prisma.card.findUnique({ where: { id: cardId } });
+    const db = transaction ?? this.prisma;
+    const card = await db.card.findUnique({ where: { id: cardId } });
     if (!card || card.organizationId !== organizationId) {
       throw new NotFoundException('Card not found');
     }
-    const targetStage = await this.prisma.pipelineStage.findUnique({
+    const targetStage = await db.pipelineStage.findUnique({
       where: { id: dto.toStageId },
     });
     if (!targetStage || targetStage.pipelineId !== card.pipelineId) {
@@ -412,7 +419,7 @@ export class PipelinesService {
       newClosedAt = null;
     }
 
-    await this.prisma.$transaction(async (tx) => {
+    const move = async (tx: Prisma.TransactionClient) => {
       if (sameStage) {
         // Reorder within the same column.
         if (fromIndex === dto.toIndex) return;
@@ -465,9 +472,11 @@ export class PipelinesService {
           closedAt: newClosedAt,
         },
       });
-    });
+    };
+    if (transaction) await move(transaction);
+    else await this.prisma.$transaction(move);
 
-    this.realtime.emitToOrg(organizationId, 'card:moved', {
+    const emit = () => this.realtime.emitToOrg(organizationId, 'card:moved', {
       cardId,
       pipelineId: card.pipelineId,
       fromStageId,
@@ -475,8 +484,9 @@ export class PipelinesService {
       toIndex: dto.toIndex,
       status: newStatus,
     });
+    if (afterCommit) afterCommit.push(emit); else emit();
 
-    return this.prisma.card.findUnique({
+    return db.card.findUnique({
       where: { id: cardId },
       include: {
         contact: { select: { id: true, name: true, phone: true, avatarUrl: true } },

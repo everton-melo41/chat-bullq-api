@@ -1,3 +1,4 @@
+import { AddTagTool, CreateInternalSummaryTool, UpdateContactFieldsTool, MovePipelineCardTool, AssignConversationTool } from './builtin/studio-actions.tools';
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AiAgentKind } from '@prisma/client';
@@ -40,6 +41,12 @@ export class ToolRegistry {
 
   constructor(
     config: ConfigService,
+    addTagTool: AddTagTool,
+    createInternalSummaryTool: CreateInternalSummaryTool,
+    updateContactFieldsTool: UpdateContactFieldsTool,
+    movePipelineCardTool: MovePipelineCardTool,
+    assignConversationTool: AssignConversationTool,
+
     reply: ReplyToConversationTool,
     transfer: TransferToHumanTool,
     tag: TagConversationTool,
@@ -56,6 +63,11 @@ export class ToolRegistry {
     agendarReuniao: AgendarReuniaoTool,
     moveRecoveryCard: MoveRecoveryCardTool,
   ) {
+    this.register(addTagTool, ['ORCHESTRATOR', 'WORKER']);
+    this.register(createInternalSummaryTool, ['ORCHESTRATOR', 'WORKER']);
+    this.register(updateContactFieldsTool, ['ORCHESTRATOR', 'WORKER']);
+    this.register(movePipelineCardTool, ['ORCHESTRATOR', 'WORKER']);
+    this.register(assignConversationTool, ['ORCHESTRATOR', 'WORKER']);
     this.register(reply, ['ORCHESTRATOR', 'WORKER']);
     this.register(transfer, ['ORCHESTRATOR', 'WORKER']);
     this.register(tag, ['ORCHESTRATOR', 'WORKER']);

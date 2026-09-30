@@ -43,26 +43,29 @@ export class TagConversationTool implements AiTool {
   async execute(
     input: Record<string, unknown>,
     ctx: ToolContext,
+    transaction?: Prisma.TransactionClient,
   ): Promise<ToolResult> {
-    const raw = Array.isArray(input.tags) ? (input.tags as unknown[]) : [];
+    const existingOnly = input.existingOnly === true;
+    const raw = existingOnly ? [input.name ?? ''] : Array.isArray(input.tags) ? (input.tags as unknown[]) : [];
     const names = Array.from(
       new Set(
         raw
-          .map((t) => String(t).trim().toLowerCase())
-          .filter((t) => t.length > 0 && t.length <= 40),
+          .map((t) => existingOnly ? String(t).trim() : String(t).trim().toLowerCase())
+          .filter((t) => t.length > 0 && (existingOnly || t.length <= 40)),
       ),
     );
 
-    if (names.length === 0) {
+    if (names.length === 0 && !input.tagId) {
       return { output: { ok: false, error: 'no valid tag names' } };
     }
 
-    const existing = await this.prisma.tag.findMany({
-      where: { organizationId: ctx.organizationId, name: { in: names } },
+    const existing = await (transaction ?? this.prisma).tag.findMany({
+      where: { organizationId: ctx.organizationId, ...(existingOnly && input.tagId ? { id: String(input.tagId) } : { name: { in: names } }) },
       select: { id: true, name: true },
     });
     const existingByName = new Map(existing.map((t) => [t.name, t.id]));
-    const toCreate = names.filter((n) => !existingByName.has(n));
+    if (existingOnly && existing.length === 0) return { output: { ok: false, error: 'Etiqueta existente não encontrada nesta organização' } };
+    const toCreate = existingOnly ? [] : names.filter((n) => !existingByName.has(n));
 
     const created = toCreate.length
       ? await this.prisma.$transaction(
@@ -76,6 +79,23 @@ export class TagConversationTool implements AiTool {
       : [];
 
     const allTags = [...existing, ...created];
+
+    if (transaction) {
+      // Shared action transaction: skipDuplicates avoids poisoning the outer
+      // transaction on a previously applied tag.
+      for (const tag of allTags) {
+        const added = await transaction.conversationTag.createMany({
+          data: [{ conversationId: ctx.conversationId, tagId: tag.id }],
+          skipDuplicates: true,
+        });
+        if (added.count) await this.outbox.enqueue(transaction, AutomationTrigger.TAG_ADDED, {
+          organizationId: ctx.organizationId, contactId: ctx.contactId,
+          conversationId: ctx.conversationId, channelId: ctx.channelId,
+          actorId: ctx.agentId, tagId: tag.id, target: 'conversation',
+        });
+      }
+      return { output: { ok: true, applied: allTags.map(tag => tag.name) } };
+    }
 
     // Apply each tag inside its own TX so the outbox emit is atomic with
     // the link creation. Use `create` + P2002 catch (instead of upsert)

@@ -1,3 +1,6 @@
+import { AddTagTool, CreateInternalSummaryTool, UpdateContactFieldsTool, MovePipelineCardTool, AssignConversationTool } from './builtin/studio-actions.tools';
+import { StudioActionsService } from './builtin/studio-actions.service';
+import { PipelinesModule } from '../../pipelines/pipelines.module';
 import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { PrismaModule } from '../../../database/prisma.module';
@@ -34,6 +37,7 @@ import { SalesRecoveryModule } from '../../sales-recovery/sales-recovery.module'
 @Module({
   imports: [
     ConfigModule,
+    PipelinesModule,
     PrismaModule,
     RealtimeModule,
     ConfirmationsModule,
@@ -41,6 +45,12 @@ import { SalesRecoveryModule } from '../../sales-recovery/sales-recovery.module'
     BullModule.registerQueue({ name: 'outbound-messages' }),
   ],
   providers: [
+    StudioActionsService,
+    AddTagTool,
+    CreateInternalSummaryTool,
+    UpdateContactFieldsTool,
+    MovePipelineCardTool,
+    AssignConversationTool,
     ReplyToConversationTool,
     TransferToHumanTool,
     TagConversationTool,
@@ -67,6 +77,6 @@ import { SalesRecoveryModule } from '../../sales-recovery/sales-recovery.module'
     HttpToolExecutorService,
     SqlToolExecutorService,
   ],
-  exports: [ToolRegistry, HttpToolExecutorService, SqlToolExecutorService],
+  exports: [StudioActionsService, ToolRegistry, HttpToolExecutorService, SqlToolExecutorService],
 })
 export class ToolsModule {}

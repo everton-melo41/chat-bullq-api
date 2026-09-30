@@ -417,7 +417,7 @@ export class ConversationsService {
   async listNotes(id: string, orgId: string, access: ChannelAccess) {
     await this.findOne(id, orgId, access);
     const notes = await this.prisma.internalNote.findMany({ where: { conversationId: id }, orderBy: { createdAt: 'asc' } });
-    const authors = await this.prisma.user.findMany({ where: { id: { in: [...new Set(notes.map(n => n.authorId))] } }, select: { id: true, name: true } });
+    const authors = await this.prisma.user.findMany({ where: { id: { in: [...new Set(notes.map(n => n.authorId).filter((id): id is string => id !== null))] } }, select: { id: true, name: true } });
     return notes.map(note => ({ ...note, author: authors.find(a => a.id === note.authorId) ?? null }));
   }
 

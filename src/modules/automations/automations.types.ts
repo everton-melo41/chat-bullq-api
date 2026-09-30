@@ -59,7 +59,8 @@ export interface ConversationAssignedPayload extends BaseEventPayload {
   conversationId: string;
   channelId: string;
   fromAssigneeId: string | null;
-  toAssigneeId: string;
+  toAssigneeId: string | null;
+  departmentId?: string | null;
 }
 
 export type AutomationEventPayload =
