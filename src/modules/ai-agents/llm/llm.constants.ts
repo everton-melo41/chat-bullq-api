@@ -2,7 +2,7 @@
 export const SAKANA_SIMPLE_MODEL = 'sakana/fugu';
 
 /** Default Sakana model for customer-facing agent conversations. */
-export const SAKANA_CONVERSATION_MODEL = 'sakana/fugu-ultra-20260615';
+export const SAKANA_CONVERSATION_MODEL = 'sakana/fugu';
 
 /** Default OpenAI-compatible base URL for Sakana's API. */
 export const SAKANA_DEFAULT_BASE_URL = 'https://api.sakana.ai/v1';
