@@ -150,11 +150,22 @@ export class AgentsService {
     return false;
   }
 
+  /**
+   * Exclui (soft delete) o agente sem deixar matéria órfã: inicial de matéria
+   * com outros agentes precisa trocar o inicial antes; se for o único membro,
+   * a matéria sai junto. Conversas com ele voltam ao roteamento normal.
+   */
   async softDelete(organizationId: string, id: string) {
     await this.findOne(organizationId, id);
-    await this.prisma.aiAgent.update({
-      where: { id },
-      data: { deletedAt: new Date(), isActive: false },
+    return this.prisma.$transaction(async tx => {
+      const initialOf = await tx.aiAgentGroup.findMany({ where: { organizationId, initialAgentId: id }, include: { members: true } });
+      const blocking = initialOf.find(g => g.members.some(m => m.agentId !== id));
+      if (blocking) throw new BadRequestException(`Este agente atende primeiro na matéria "${blocking.name}". Escolha outro agente inicial nessa matéria antes de excluir.`);
+      await tx.aiAgentGroupMember.deleteMany({ where: { agentId: id } });
+      if (initialOf.length) await tx.aiAgentGroup.deleteMany({ where: { id: { in: initialOf.map(g => g.id) } } });
+      await tx.conversation.updateMany({ where: { organizationId, activeAgentId: id }, data: { activeAgentId: null } });
+      await tx.aiAgent.update({ where: { id }, data: { deletedAt: new Date(), isActive: false } });
+      return { deleted: true, removedGroups: initialOf.map(g => g.name) };
     });
   }
 

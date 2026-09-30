@@ -36,4 +36,15 @@ export class AgentGroupsService {
       return group;
     });
   }
+
+  /** Exclui a matéria; os agentes continuam existindo, "sem matéria". */
+  async remove(organizationId: string, id: string) {
+    const group = await this.prisma.aiAgentGroup.findFirst({ where: { id, organizationId } });
+    if (!group) throw new NotFoundException('Matéria não encontrada');
+    await this.prisma.$transaction([
+      this.prisma.aiAgentGroupMember.deleteMany({ where: { groupId: id } }),
+      this.prisma.aiAgentGroup.delete({ where: { id } }),
+    ]);
+    return { deleted: true };
+  }
 }

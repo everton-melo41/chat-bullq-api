@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Put, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Put, UseGuards } from '@nestjs/common';
 import { OrgRole } from '@prisma/client';
 import { CurrentOrg, Roles } from '../../../common/decorators';
 import { JwtAuthGuard, OrgGuard, RolesGuard } from '../../../common/guards';
@@ -16,4 +16,7 @@ export class AgentGroupsController {
   @Put(':id')
   @Roles(OrgRole.OWNER, OrgRole.ADMIN)
   update(@CurrentOrg('id') org: string, @Param('id') id: string, @Body() dto: SaveAgentGroupDto) { return this.service.save(org, dto, id); }
+  @Delete(':id')
+  @Roles(OrgRole.OWNER, OrgRole.ADMIN)
+  remove(@CurrentOrg('id') org: string, @Param('id') id: string) { return this.service.remove(org, id); }
 }
