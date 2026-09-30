@@ -263,6 +263,9 @@ model Invitation {
 // ─── Channel Hub ─────────────────────────────────
 
 model Channel {
+  defaultDepartmentId String? @map("default_department_id")
+  defaultDepartment Department? @relation("ChannelDefaultDepartment", fields: [defaultDepartmentId], references: [id], onDelete: SetNull)
+  departments Department[] @relation("ChannelDepartments")
   id             String            @id @default(cuid())
   organizationId String            @map("organization_id")
   type           ChannelType
@@ -723,6 +726,9 @@ model Message {
 // ─── Departments / Routing ───────────────────────
 
 model Department {
+  channelId String? @map("channel_id")
+  channel Channel? @relation("ChannelDepartments", fields: [channelId], references: [id], onDelete: SetNull)
+  defaultForChannels Channel[] @relation("ChannelDefaultDepartment")
   id               String           @id @default(cuid())
   organizationId   String           @map("organization_id")
   name             String
@@ -739,6 +745,7 @@ model Department {
   agents        DepartmentAgent[]
   conversations Conversation[]
 
+  @@index([channelId])
   @@map("departments")
 }
 

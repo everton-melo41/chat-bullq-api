@@ -3,6 +3,10 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { DistributionRule } from '@prisma/client';
 
 export class CreateDepartmentDto {
+  @IsOptional()
+  @IsString()
+  channelId?: string | null;
+
   @ApiProperty()
   @IsString()
   name: string;

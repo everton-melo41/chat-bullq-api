@@ -13,11 +13,15 @@ export class DepartmentsService {
   constructor(private readonly repository: DepartmentsRepository) {}
 
   async create(orgId: string, dto: CreateDepartmentDto) {
+    if (dto.channelId && !await this.repository.validateChannel(dto.channelId, orgId)) {
+      throw new BadRequestException('Canal inválido para esta organização');
+    }
     if (dto.isDefault) {
       await this.repository.clearDefaultForOrg(orgId);
     }
     return this.repository.create({
       name: dto.name,
+      ...(dto.channelId ? { channel: { connect: { id: dto.channelId } } } : {}),
       description: dto.description,
       distributionRule: dto.distributionRule,
       isDefault: dto.isDefault ?? false,
@@ -39,9 +43,13 @@ export class DepartmentsService {
 
   async update(id: string, orgId: string, dto: UpdateDepartmentDto) {
     await this.findOne(id, orgId);
+    if (dto.channelId && !await this.repository.validateChannel(dto.channelId, orgId)) {
+      throw new BadRequestException('Canal inválido para esta organização');
+    }
     if (dto.isDefault) {
       await this.repository.clearDefaultForOrg(orgId, id);
     }
+    if (dto.channelId !== undefined) await this.repository.changeChannel(id, dto.channelId);
     return this.repository.update(id, {
       ...(dto.name !== undefined && { name: dto.name }),
       ...(dto.description !== undefined && { description: dto.description }),
@@ -52,6 +60,7 @@ export class DepartmentsService {
 
   async remove(id: string, orgId: string) {
     await this.findOne(id, orgId);
+    await this.repository.changeChannel(id, null);
     return this.repository.softDelete(id);
   }
 

@@ -203,6 +203,13 @@ export class ChannelsService {
   ) {
     await this.findOne(id, organizationId);
 
+    if (dto.defaultDepartmentId) {
+      const department = await this.prisma.department.findFirst({
+        where: { id: dto.defaultDepartmentId, organizationId, channelId: id, deletedAt: null },
+      });
+      if (!department) throw new BadRequestException('Departamento padrão deve pertencer a este canal');
+    }
+
     // Visibility é tratado por caminho separado pra garantir auto-grant.
     const { visibility, ...rest } = dto;
     if (visibility && callerUserOrganizationId) {

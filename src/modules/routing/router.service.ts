@@ -29,8 +29,20 @@ export class RouterService {
       throw new NotFoundException('Conversation not found');
     }
 
-    const department = await this.prisma.department.findFirst({
-      where: { organizationId, deletedAt: null },
+    // Keep routing inside the conversation's immutable channel. Prefer its
+    // current/default department; org-wide departments remain compatible.
+    const channel = await this.prisma.channel.findUnique({
+      where: { id: conversation.channelId }, select: { defaultDepartmentId: true },
+    });
+    const preferredId = conversation.departmentId ?? channel?.defaultDepartmentId;
+    const department = (preferredId ? await this.prisma.department.findFirst({
+      where: { id: preferredId, organizationId, deletedAt: null,
+        OR: [{ channelId: conversation.channelId }, { channelId: null }] },
+    }) : null) ?? await this.prisma.department.findFirst({
+      where: { organizationId, deletedAt: null, channelId: conversation.channelId },
+      orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
+    }) ?? await this.prisma.department.findFirst({
+      where: { organizationId, deletedAt: null, channelId: null },
       orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
     });
     if (!department) {

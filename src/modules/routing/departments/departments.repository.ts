@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 
@@ -34,19 +34,56 @@ export class DepartmentsRepository {
     });
   }
 
+  async validateChannel(channelId: string, organizationId: string) {
+    return this.prisma.channel.findFirst({ where: { id: channelId, organizationId, deletedAt: null } });
+  }
+
+  // Membership in any active department of a channel grants access to that
+  // channel. Only remove the grant after the LAST such membership disappears.
+  private async syncGrant(tx: Prisma.TransactionClient, channelId: string, userOrganizationId: string) {
+    const count = await tx.departmentAgent.count({ where: {
+      userOrganizationId, isActive: true, department: { channelId, deletedAt: null },
+    } });
+    if (count) await tx.channelAgent.upsert({
+      where: { channelId_userOrganizationId: { channelId, userOrganizationId } },
+      create: { channelId, userOrganizationId }, update: {},
+    });
+    else await tx.channelAgent.deleteMany({ where: { channelId, userOrganizationId } });
+  }
+
+  async changeChannel(id: string, channelId: string | null) {
+    return this.prisma.$transaction(async (tx) => {
+      const before = await tx.department.findUniqueOrThrow({ where: { id }, include: { agents: true } });
+      if (before.channelId === channelId) return before;
+      // Existing conversations keep their channel and department; do not move
+      // a department that would invalidate those assignments/defaults.
+      const inUse = await tx.conversation.count({ where: { departmentId: id, ...(channelId ? { channelId: { not: channelId } } : {}) } });
+      if (channelId && inUse) throw new BadRequestException('Departamento possui conversas em outro canal');
+      await tx.channel.updateMany({ where: { defaultDepartmentId: id }, data: { defaultDepartmentId: null } });
+      const result = await tx.department.update({ where: { id }, data: { channelId } });
+      for (const member of before.agents) {
+        if (before.channelId) await this.syncGrant(tx, before.channelId, member.userOrganizationId);
+        if (channelId) await this.syncGrant(tx, channelId, member.userOrganizationId);
+      }
+      return result;
+    });
+  }
+
   async addAgent(departmentId: string, userOrganizationId: string) {
-    return this.prisma.departmentAgent.create({
-      data: {
-        departmentId,
-        userOrganizationId,
-        isActive: true,
-      },
+    return this.prisma.$transaction(async (tx) => {
+      const department = await tx.department.findUniqueOrThrow({ where: { id: departmentId } });
+      const member = await tx.departmentAgent.create({ data: { departmentId, userOrganizationId, isActive: true } });
+      if (department.channelId) await this.syncGrant(tx, department.channelId, userOrganizationId);
+      return member;
     });
   }
 
   async removeAgent(departmentId: string, userOrganizationId: string) {
-    return this.prisma.departmentAgent.deleteMany({
-      where: { departmentId, userOrganizationId },
+    return this.prisma.$transaction(async (tx) => {
+      const department = await tx.department.findUniqueOrThrow({ where: { id: departmentId } });
+      const result = await tx.departmentAgent.deleteMany({ where: { departmentId, userOrganizationId } });
+      if (department.channelId) await this.syncGrant(tx, department.channelId, userOrganizationId);
+      return result;
     });
   }
 

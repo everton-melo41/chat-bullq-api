@@ -101,6 +101,7 @@ export class ConversationResolverService {
           }
         }
 
+        const channel = await this.prisma.channel.findUnique({ where: { id: channelId }, select: { defaultDepartmentId: true } });
         const protocol = this.generateProtocol();
         const conversation = await this.prisma.conversation.create({
           data: {
@@ -109,6 +110,7 @@ export class ConversationResolverService {
             contactId,
             status: ConversationStatus.PENDING,
             protocol,
+            departmentId: channel?.defaultDepartmentId ?? null,
             isGroup: isGroup || false,
           },
         });
@@ -182,6 +184,7 @@ export class ConversationResolverService {
           };
         }
 
+        const channel = await this.prisma.channel.findUnique({ where: { id: channelId }, select: { defaultDepartmentId: true } });
         const protocol = this.generateProtocol();
         const conversation = await this.prisma.conversation.create({
           data: {
@@ -192,6 +195,7 @@ export class ConversationResolverService {
             subject: opts.subject ?? null,
             status: ConversationStatus.PENDING,
             protocol,
+            departmentId: channel?.defaultDepartmentId ?? null,
             isGroup: false,
           },
         });
@@ -247,6 +251,7 @@ export class ConversationResolverService {
         const existing = await this.findOpen(organizationId, channelId, contactId);
         if (existing) return this.touchOpen(existing);
 
+        const channel = await this.prisma.channel.findUnique({ where: { id: channelId }, select: { defaultDepartmentId: true } });
         const protocol = this.generateProtocol();
         const conversation = await this.prisma.conversation.create({
           data: {
@@ -257,6 +262,7 @@ export class ConversationResolverService {
             assignedToId: senderId,
             aiEnabled: false,
             protocol,
+            departmentId: channel?.defaultDepartmentId ?? null,
             isGroup: false,
             subject: subject?.trim() || undefined,
           },
