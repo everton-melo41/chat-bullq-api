@@ -833,8 +833,13 @@ export class MessagesService {
       ? await this.repository.findByConversationsUnioned(siblingIds, skip, limit)
       : await this.repository.findByConversation(conversationId, skip, limit);
 
+    const lastInbound = await this.prisma.message.findFirst({
+      where: { conversationId, direction: 'INBOUND' },
+      orderBy: { createdAt: 'desc' }, select: { createdAt: true },
+    });
     return {
       messages,
+      lastInboundAt: lastInbound?.createdAt ?? null,
       pagination: {
         page,
         limit,

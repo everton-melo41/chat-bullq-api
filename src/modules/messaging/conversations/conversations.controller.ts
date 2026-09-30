@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags, ApiOperation, ApiQuery } from '@nestjs/swagger';
 import { OrgRole } from '@prisma/client';
+import { CreateInternalNoteDto } from './dto/create-internal-note.dto';
 import { ConversationsService } from './conversations.service';
 import { UpdateConversationDto } from './dto/update-conversation.dto';
 import { StartConversationDto } from './dto/start-conversation.dto';
@@ -33,6 +34,21 @@ export class ConversationsController {
     private readonly service: ConversationsService,
     private readonly messagesService: MessagesService,
   ) {}
+
+  @Get(':id/notes')
+  listNotes(@Param('id') id: string, @CurrentOrg('id') orgId: string, @CurrentChannelAccess() access: ChannelAccess) {
+    return this.service.listNotes(id, orgId, access);
+  }
+
+  @Post(':id/notes')
+  createNote(@Param('id') id: string, @Body() dto: CreateInternalNoteDto, @CurrentUser('id') userId: string, @CurrentOrg('id') orgId: string, @CurrentChannelAccess() access: ChannelAccess) {
+    return this.service.createNote(id, orgId, userId, dto.content, access);
+  }
+
+  @Delete(':id/notes/:noteId')
+  deleteNote(@Param('id') id: string, @Param('noteId') noteId: string, @CurrentUser('id') userId: string, @CurrentOrg('id') orgId: string, @CurrentChannelAccess() access: ChannelAccess) {
+    return this.service.deleteNote(id, orgId, userId, noteId, access);
+  }
 
   @Post()
   @ApiOperation({

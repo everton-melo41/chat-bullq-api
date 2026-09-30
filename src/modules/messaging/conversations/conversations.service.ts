@@ -414,6 +414,29 @@ export class ConversationsService {
     }
   }
 
+  async listNotes(id: string, orgId: string, access: ChannelAccess) {
+    await this.findOne(id, orgId, access);
+    const notes = await this.prisma.internalNote.findMany({ where: { conversationId: id }, orderBy: { createdAt: 'asc' } });
+    const authors = await this.prisma.user.findMany({ where: { id: { in: [...new Set(notes.map(n => n.authorId))] } }, select: { id: true, name: true } });
+    return notes.map(note => ({ ...note, author: authors.find(a => a.id === note.authorId) ?? null }));
+  }
+
+  async createNote(id: string, orgId: string, userId: string, content: string, access: ChannelAccess) {
+    await this.findOne(id, orgId, access);
+    if (!content.trim() || content.length > 20000) throw new BadRequestException('Nota inválida');
+    const note = await this.prisma.internalNote.create({ data: { conversationId: id, authorId: userId, content: content.trim() } });
+    this.realtimeGateway.emitToConversation(id, 'note:changed', { conversationId: id, noteId: note.id });
+    return note;
+  }
+
+  async deleteNote(id: string, orgId: string, userId: string, noteId: string, access: ChannelAccess) {
+    await this.findOne(id, orgId, access);
+    const result = await this.prisma.internalNote.deleteMany({ where: { id: noteId, conversationId: id, authorId: userId } });
+    if (!result.count) throw new NotFoundException('Nota própria não encontrada');
+    this.realtimeGateway.emitToConversation(id, 'note:changed', { conversationId: id, noteId });
+    return { removed: true };
+  }
+
   async update(
     id: string,
     organizationId: string,
@@ -422,6 +445,13 @@ export class ConversationsService {
     access: ChannelAccess = 'ALL',
   ) {
     const conversation = await this.findOne(id, organizationId, access);
+
+    if (dto.departmentId) {
+      const destination = await this.prisma.department.findFirst({ where: { id: dto.departmentId, organizationId, deletedAt: null } });
+      if (!destination || (destination.channelId && destination.channelId !== conversation.channelId)) {
+        throw new BadRequestException('Departamento deve ser geral ou pertencer ao mesmo canal da conversa');
+      }
+    }
 
     if (dto.assignedToId) {
       await this.fsm.assign(id, dto.assignedToId, actorId);
