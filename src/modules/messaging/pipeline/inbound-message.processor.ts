@@ -671,11 +671,35 @@ export class InboundMessageProcessor extends WorkerHost {
 
   /** Fixed BullMQ job per conversation; Redis also retains deadlines that
    * arrive while that job is active. No timer is lost on process restart. */
+  /**
+   * Tempo de espera configurado no agente (Estúdio > Configurações), lido da
+   * versão publicada do agente ativo ou do agente inicial da matéria do número.
+   * Áudio nunca fica abaixo da janela de áudio global.
+   */
+  private async agentDelayMs(conversationId: string, audio: boolean): Promise<number> {
+    const fallback = agentDebounceMs(audio);
+    try {
+      const conv = await this.prisma.conversation.findUnique({
+        where: { id: conversationId },
+        select: {
+          activeAgent: { select: { publishedRevision: { select: { snapshot: true } } } },
+          channel: { select: { aiAgentGroup: { select: { initialAgent: { select: { publishedRevision: { select: { snapshot: true } } } } } } } },
+        },
+      });
+      const snap = (conv?.activeAgent?.publishedRevision?.snapshot ?? conv?.channel?.aiAgentGroup?.initialAgent?.publishedRevision?.snapshot) as any;
+      const seconds = Number(snap?.modelParams?.debounceSeconds);
+      if (!Number.isFinite(seconds) || seconds < 5 || seconds > 120) return fallback;
+      return audio ? Math.max(seconds * 1000, fallback) : seconds * 1000;
+    } catch {
+      return fallback;
+    }
+  }
+
   private async scheduleAgentRun(conversationId: string, triggerMessageId: string, audio = false) {
+    const delay = await this.agentDelayMs(conversationId, audio);
     await this.idempotency.withLock(`ai-schedule-${conversationId}`, async () => {
       const redis = await this.inboundQueue.client;
       const key = this.debounceKey(conversationId);
-      const delay = agentDebounceMs(audio);
       // A text following an audio must not shorten the audio's larger window.
       const oldDue = Number(await redis.hget(key, 'due') ?? 0);
       const due = Math.max(oldDue, Date.now() + delay);

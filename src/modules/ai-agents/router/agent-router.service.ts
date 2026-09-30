@@ -82,6 +82,13 @@ export class AgentRouterService {
       where: { id: conversation.channelId, organizationId: conversation.organizationId },
       select: { aiAgentGroupId: true },
     });
+    // Palavras-chave de ativação (Estúdio > Configurações): só no início da
+    // conversa. Com matéria no número, só entre os agentes dessa matéria.
+    const byKeyword = await this.keywordAgent(conversation.organizationId, latestMessageText, channel?.aiAgentGroupId ?? null);
+    if (byKeyword) {
+      return { agentId: byKeyword.id, agentName: byKeyword.name, classifiedIntent: null,
+        classifierConfidence: null, skippedOrchestrator: false, classifierCostUsd: 0 };
+    }
     if (channel?.aiAgentGroupId) {
       const agent = await this.groupInitialAgent(channel.aiAgentGroupId, conversation.organizationId);
       // Um grupo configurado nunca cai em um agente de fora do grupo.
@@ -162,6 +169,24 @@ export class AgentRouterService {
       fallback.classifierCostUsd = classification.costUsd;
     }
     return fallback;
+  }
+
+  private async keywordAgent(organizationId: string, text: string, groupId: string | null) {
+    const norm = (v: string) => v.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    const haystack = ` ${norm(text ?? '').replace(/[^a-z0-9]+/g, ' ')} `;
+    if (haystack.trim().length === 0) return null;
+    const agents = await this.prisma.aiAgent.findMany({
+      where: { organizationId, isActive: true, deletedAt: null, publishedRevisionId: { not: null },
+        ...(groupId ? { groupMemberships: { some: { groupId } } } : {}) },
+      select: { id: true, name: true, publishedRevision: { select: { snapshot: true } } },
+      orderBy: { createdAt: 'asc' },
+    });
+    for (const a of agents) {
+      const words = ((a.publishedRevision?.snapshot as any)?.modelParams?.activationKeywords ?? []) as unknown[];
+      const hit = words.some(w => typeof w === 'string' && w.trim() && haystack.includes(` ${norm(w).replace(/[^a-z0-9]+/g, ' ').trim()} `));
+      if (hit) return { id: a.id, name: a.name };
+    }
+    return null;
   }
 
   private async groupInitialAgent(groupId: string, organizationId: string) {

@@ -9,7 +9,7 @@ describe('roteamento de grupos', () => {
     const prisma: any = {
       channel: { findUnique: jest.fn().mockResolvedValue({ aiAgentGroupId: group, aiEnabled: true }) },
       aiAgentGroup: { findFirst: jest.fn().mockResolvedValue({ initialAgentId: 'initial' }) },
-      aiAgent: { findFirst: jest.fn().mockResolvedValue({ id: 'initial', name: 'Triagem' }), findUnique: jest.fn().mockResolvedValue({ id: 'active', name: 'Especialista' }) },
+      aiAgent: { findMany: jest.fn().mockResolvedValue([]), findFirst: jest.fn().mockResolvedValue({ id: 'initial', name: 'Triagem' }), findUnique: jest.fn().mockResolvedValue({ id: 'active', name: 'Especialista' }) },
       aiAgentChannel: { findFirst: jest.fn().mockResolvedValue({ agent: { id: 'legacy', name: 'Legado' } }) },
       organization: { findUnique: jest.fn().mockResolvedValue({ id: 'org', aiEnabled: true }) },
     };
@@ -22,6 +22,16 @@ describe('roteamento de grupos', () => {
     expect(await router.shouldHandle(conversation)).toEqual({ handle: true });
     expect(classifier.classify).not.toHaveBeenCalled();
     expect(prisma.aiAgentChannel.findFirst).not.toHaveBeenCalled();
+  });
+  it('palavra-chave de ativação escolhe o agente no início da conversa, ignorando acento e caixa', async () => {
+    const { router, prisma } = fixture();
+    prisma.aiAgent.findMany.mockResolvedValue([
+      { id: 'renda', name: 'Renda', publishedRevision: { snapshot: { modelParams: { activationKeywords: ['auxílio acidente'] } } } },
+      { id: 'bpc', name: 'BPC', publishedRevision: { snapshot: { modelParams: { activationKeywords: ['BPC', 'LOAS'] } } } },
+    ]);
+    expect(await router.selectAgent(conversation, 'Olá! Vi o anúncio do loas, quero saber mais')).toMatchObject({ agentId: 'bpc' });
+    expect(await router.selectAgent(conversation, 'Sobre AUXILIO-ACIDENTE')).toMatchObject({ agentId: 'renda' });
+    expect(await router.selectAgent(conversation, 'Quero um bpcx qualquer')).toMatchObject({ agentId: 'initial' });
   });
   it('preserva agente ativo', async () => {
     const { router, classifier } = fixture();
