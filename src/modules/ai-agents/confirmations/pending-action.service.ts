@@ -78,13 +78,14 @@ export class PendingActionService {
     const action = await this.storage.get(id);
     if (!action) throw new NotFoundException('Pending action not found');
 
-    if (action.status !== 'PENDING') {
+    const retry = action.status === 'APPROVED' && (action.executionResult as any)?.ok === false;
+    if (action.status !== 'PENDING' && !retry) {
       throw new BadRequestException(
         `Action is ${action.status} and cannot be approved`,
       );
     }
 
-    if (this.isExpired(action)) {
+    if (!retry && this.isExpired(action)) {
       const previous = action.status;
       action.status = 'EXPIRED';
       await this.storage.save(action, previous);

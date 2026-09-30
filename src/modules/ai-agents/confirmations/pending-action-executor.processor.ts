@@ -1,3 +1,6 @@
+import { SqlToolExecutorService } from '../tools/sql-tool-executor.service';
+import { StudioActionsService } from '../tools/builtin/studio-actions.service';
+import { PendingAction } from './confirmation.types';
 import { Logger } from '@nestjs/common';
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Prisma } from '@prisma/client';
@@ -27,12 +30,12 @@ type ExecutorJobData =
  *
  * Quando o operador aprova um `AiPendingAction`, o `PendingActionService`
  * enfileira aqui. Esse worker:
- *   - resolve a tool original (built-in `transferToHuman` ou skill HTTP)
+ *   - resolve a tool original (built-in `transferToHuman` ou skill HTTP/SQL)
  *   - executa de fato (HTTP com `bypassPendingGate: true` pra evitar loop)
  *   - grava `executionResult` e marca status `EXECUTED`
  *
- * Falhas resultam em status PENDING + executionResult com error → operador
- * pode re-aprovar. Não bloqueia outras pendings.
+ * Falhas resultam em status APPROVED + executionResult com error → operador
+ * pode enfileirar nova tentativa. Não bloqueia outras pendings.
  */
 @Processor(PENDING_ACTION_EXECUTOR_QUEUE, { concurrency: 4 })
 export class PendingActionExecutorProcessor extends WorkerHost {
@@ -41,6 +44,8 @@ export class PendingActionExecutorProcessor extends WorkerHost {
   constructor(
     private readonly prisma: PrismaService,
     private readonly httpExecutor: HttpToolExecutorService,
+    private readonly sqlExecutor: SqlToolExecutorService,
+    private readonly actions: StudioActionsService,
     private readonly storage: PendingActionStorage,
   ) {
     super();
@@ -64,14 +69,23 @@ export class PendingActionExecutorProcessor extends WorkerHost {
       return { skipped: true, reason: `status_${action.status}` };
     }
 
+    const startedAt = Date.now();
     let result: unknown;
     let success = true;
 
     try {
+      const ctx = await this.context(action);
+      if (!action.approvedBy) throw new Error('Approver missing');
+      await this.actions.assertApprover(ctx, action.approvedBy);
       if (action.toolName === 'transferToHuman') {
-        result = await this.executeTransferToHuman(action);
+        result = (await this.actions.execute(action.toolName, action.args, ctx, action.approvedBy)).output;
       } else {
-        result = await this.executeHttpSkill(action);
+        result = await this.executeSkill(action, ctx);
+      }
+      const output = result as Record<string, unknown> | null;
+      const body = output?.body as Record<string, unknown> | undefined;
+      if (output?.ok === false || output?.success === false || output?.error || body?.ok === false || body?.success === false || body?.error) {
+        throw new Error(String(output?.error || body?.error || 'Skill returned a logical failure'));
       }
     } catch (err: any) {
       success = false;
@@ -86,6 +100,16 @@ export class PendingActionExecutorProcessor extends WorkerHost {
       data: {
         status: success ? 'EXECUTED' : 'APPROVED', // re-tentável se falhou
         executionResult: (result as Prisma.InputJsonValue) ?? Prisma.JsonNull,
+      },
+    });
+
+    await this.prisma.aiToolCall.create({
+      data: {
+        runId: action.agentRunId, toolName: action.toolName,
+        input: { ...action.args, pendingActionId },
+        output: (result as Prisma.InputJsonValue) ?? Prisma.JsonNull,
+        error: success ? null : String((result as any)?.error ?? 'Execution failed'),
+        durationMs: Date.now() - startedAt,
       },
     });
 
@@ -121,76 +145,39 @@ export class PendingActionExecutorProcessor extends WorkerHost {
     return { expired: result.count };
   }
 
-  private async executeTransferToHuman(action: {
-    conversationId: string;
-    args: Record<string, unknown>;
-  }): Promise<unknown> {
-    // Pausa a IA na conversa + sinaliza que aguarda atendente humano.
-    // Notificações em tempo real (banner no inbox) já foram emitidas no
-    // momento da criação do PendingAction — aqui só efetivamos a transição.
-    await this.prisma.conversation.update({
-      where: { id: action.conversationId },
-      data: { aiEnabled: false },
+  private async context(action: PendingAction): Promise<ToolContext> {
+    const run = await this.prisma.aiAgentRun.findFirst({
+      where: { id: action.agentRunId, conversationId: action.conversationId, agentId: action.agentId },
     });
+    if (!run) throw new Error('Run not found');
+    const conversation = await this.prisma.conversation.findFirst({
+      where: { id: action.conversationId, organizationId: run.organizationId, deletedAt: null },
+    });
+    if (!conversation) throw new Error('Conversation outside organization');
     return {
-      ok: true,
-      transferredAt: new Date().toISOString(),
-      reason: action.args?.reason ?? null,
+      organizationId: run.organizationId, conversationId: conversation.id,
+      contactId: conversation.contactId, channelId: conversation.channelId,
+      agentId: action.agentId, runId: action.agentRunId,
+      triggerMessageId: run.triggerMessageId ?? '',
     };
   }
 
-  private async executeHttpSkill(action: {
-    agentRunId: string;
-    conversationId: string;
-    agentId: string;
-    toolName: string;
-    args: Record<string, unknown>;
-  }): Promise<unknown> {
+  private async executeSkill(action: PendingAction, ctx: ToolContext): Promise<unknown> {
+    const { __skillId, ...input } = action.args;
     const skill = await this.prisma.aiSkill.findFirst({
-      where: { name: action.toolName, isActive: true, deletedAt: null },
+      where: {
+        organizationId: ctx.organizationId, isActive: true, deletedAt: null,
+        ...(typeof __skillId === 'string' ? { id: __skillId } : { name: action.toolName }),
+      },
     });
-    if (!skill) {
-      throw new Error(`Skill ${action.toolName} not found or inactive`);
-    }
-    if (!skill.toolId) {
-      throw new Error(`Skill ${action.toolName} has no bound tool`);
-    }
-    const tool = await this.prisma.aiTool.findUnique({
-      where: { id: skill.toolId },
+    if (!skill?.toolId) throw new Error('Skill not found or inactive');
+    const tool = await this.prisma.aiTool.findFirst({
+      where: { id: skill.toolId, organizationId: ctx.organizationId, isActive: true, deletedAt: null },
     });
-    if (!tool) {
-      throw new Error(`Tool ${skill.toolId} not found for skill ${skill.name}`);
-    }
-
-    const run = await this.prisma.aiAgentRun.findUnique({
-      where: { id: action.agentRunId },
-      select: { organizationId: true, triggerMessageId: true },
-    });
-    const conversation = await this.prisma.conversation.findUnique({
-      where: { id: action.conversationId },
-      select: { contactId: true, channelId: true },
-    });
-    if (!run || !conversation) {
-      throw new Error('Run or conversation no longer exists');
-    }
-
-    const ctx: ToolContext = {
-      organizationId: run.organizationId,
-      conversationId: action.conversationId,
-      contactId: conversation.contactId,
-      channelId: conversation.channelId,
-      agentId: action.agentId,
-      runId: action.agentRunId,
-      triggerMessageId: run.triggerMessageId ?? '',
-    };
-
-    const result = await this.httpExecutor.execute(
-      skill,
-      tool,
-      action.args,
-      ctx,
-      { bypassPendingGate: true },
-    );
+    if (!tool) throw new Error('Tool not found or inactive');
+    await this.actions.assertContext(ctx);
+    const executor = skill.source === 'SQL' ? this.sqlExecutor : this.httpExecutor;
+    const result = await executor.execute(skill, tool, input, ctx, { bypassPendingGate: true });
     return result.output;
   }
 }

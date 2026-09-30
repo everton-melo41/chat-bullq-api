@@ -1,3 +1,4 @@
+import { HttpToolExecutorService } from './http-tool-executor.service';
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { AiSkill, AiTool } from '@prisma/client';
@@ -13,7 +14,7 @@ export class SqlToolExecutorService implements OnModuleDestroy {
   private readonly logger = new Logger(SqlToolExecutorService.name);
   private readonly pools = new Map<string, Pool>();
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(private readonly config: ConfigService, private readonly approvals: HttpToolExecutorService) {}
 
   async onModuleDestroy() {
     for (const pool of this.pools.values()) {
@@ -26,6 +27,7 @@ export class SqlToolExecutorService implements OnModuleDestroy {
     tool: AiTool,
     input: Record<string, unknown>,
     ctx: ToolContext,
+    options: { bypassPendingGate?: boolean } = {},
   ): Promise<ToolResult> {
     if (skill.source !== 'SQL') {
       throw new Error(`Skill ${skill.name} is not a SQL skill`);
@@ -53,6 +55,9 @@ export class SqlToolExecutorService implements OnModuleDestroy {
         },
       };
     }
+
+    const pending = await this.approvals.approvalGate(skill, input, ctx, options);
+    if (pending) return pending;
 
     const dsn = this.config.get<string>(tool.sqlConnectionRef);
     if (!dsn) {

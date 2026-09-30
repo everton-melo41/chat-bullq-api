@@ -81,15 +81,8 @@ export class HttpToolExecutorService {
     // skill seja gateada antes de executar pra esse agent específico.
     // `bypassPendingGate` é usado pelo executor pós-aprovação pra rodar
     // a skill DEPOIS que o operador aprovou (evita loop de PendingActions).
-    if (!options.bypassPendingGate) {
-      const link = await this.prisma.aiAgentSkill.findUnique({
-        where: { agentId_skillId: { agentId: ctx.agentId, skillId: skill.id } },
-        select: { requiresApproval: true },
-      });
-      if (link?.requiresApproval) {
-        return this.gateAsPendingAction(skill, input, ctx, impactFor(skill.name));
-      }
-    }
+    const pending = await this.approvalGate(skill, input, ctx, options);
+    if (pending) return pending;
 
     const url =
       this.renderTemplate(tool.httpBaseUrl, { input, ctx }).replace(/\/+$/, '') +
@@ -151,6 +144,11 @@ export class HttpToolExecutorService {
           ? mapped
           : { ok, status: response.status, body: parsed };
 
+      const logicalFailure = (value: unknown): boolean => !!value && typeof value === 'object' &&
+        ((value as any).ok === false || (value as any).success === false || Boolean((value as any).error));
+      if (!ok || logicalFailure(parsed) || logicalFailure(output)) {
+        return { output: { ok: false, error: (parsed as any)?.error || (output as any)?.error || 'HTTP skill failed', status: response.status, body: parsed } };
+      }
       return { output };
     } catch (err: any) {
       const isTimeout = err?.name === 'AbortError';
@@ -164,6 +162,19 @@ export class HttpToolExecutorService {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  async approvalGate(skill: AiSkill, input: Record<string, unknown>, ctx: ToolContext, options: { bypassPendingGate?: boolean } = {}): Promise<ToolResult | null> {
+    if (skill.organizationId !== ctx.organizationId) throw new Error('Skill outside organization');
+    const link = await this.prisma.aiAgentSkill.findUnique({
+      where: { agentId_skillId: { agentId: ctx.agentId, skillId: skill.id } },
+      select: { requiresApproval: true },
+    });
+    if (!link) throw new Error('Skill no longer assigned to agent');
+    if (!options.bypassPendingGate && link.requiresApproval) {
+      return this.gateAsPendingAction(skill, input, ctx, impactFor(skill.name));
+    }
+    return null;
   }
 
   // ─── helpers ───────────────────────────────────────────────────
@@ -194,7 +205,7 @@ export class HttpToolExecutorService {
       conversationId: ctx.conversationId,
       agentId: ctx.agentId,
       toolName: skill.name,
-      args: input,
+      args: { ...input, __skillId: skill.id },
       preview,
     });
 
