@@ -3,6 +3,7 @@ import { AgentGroupsController } from './groups/agent-groups.controller';
 import { AgentGroupsService } from './groups/agent-groups.service';
 import { AgentRevisionsService } from './agents/revisions.service';
 import { MentionsService } from './mentions/mentions.service';
+import { AgentTestChatService } from './mentions/agent-test-chat.service';
 import { Module, forwardRef } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from '../../database/prisma.module';
@@ -64,6 +65,7 @@ import { EvalsModule } from './evals/evals.module';
     AgentsService,
     AgentRevisionsService,
     MentionsService,
+    AgentTestChatService,
     ToolsCatalogService,
     SkillsCatalogService,
     CatalogSyncService,

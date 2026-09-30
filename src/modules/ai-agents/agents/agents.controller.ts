@@ -1,4 +1,5 @@
 import { AgentRevisionsService } from './revisions.service';
+import { AgentTestChatService, TestChatTurn } from '../mentions/agent-test-chat.service';
 import { MentionsService } from '../mentions/mentions.service';
 import { IsOptional, IsString, MaxLength } from 'class-validator';
 import { ToolRegistry } from '../tools/tool-registry.service';
@@ -37,7 +38,12 @@ class PublishAgentDto {
 @UseGuards(JwtAuthGuard, OrgGuard, RolesGuard)
 @Controller('ai-agents')
 export class AgentsController {
-  constructor(private readonly service: AgentsService, private readonly registry: ToolRegistry, private readonly revisions: AgentRevisionsService, private readonly mentions: MentionsService) {}
+  constructor(private readonly service: AgentsService, private readonly registry: ToolRegistry, private readonly revisions: AgentRevisionsService, private readonly mentions: MentionsService, private readonly testChat: AgentTestChatService) {}
+
+  @Post(':id/test-chat')
+  testChatTurn(@CurrentOrg('id') orgId: string, @Param('id') id: string, @Body() body: { messages: TestChatTurn[]; useDraft?: boolean }) {
+    return this.testChat.run(orgId, id, body?.messages ?? [], body?.useDraft !== false);
+  }
 
   @Get('mention-options')
   mentionOptions(@CurrentOrg('id') orgId: string) {
