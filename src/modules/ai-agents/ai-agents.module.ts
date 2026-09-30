@@ -3,6 +3,8 @@ import { AgentGroupsController } from './groups/agent-groups.controller';
 import { AgentGroupsService } from './groups/agent-groups.service';
 import { AgentRevisionsService } from './agents/revisions.service';
 import { MentionsService } from './mentions/mentions.service';
+import { AgentMediaController } from './media/agent-media.controller';
+import { UploadsService } from '../messaging/messages/uploads.service';
 import { AgentTestChatService } from './mentions/agent-test-chat.service';
 import { Module, forwardRef } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
@@ -53,7 +55,8 @@ import { EvalsModule } from './evals/evals.module';
     RagModule,
     EvalsModule,
   ],
-  controllers: [AgentGroupsController, AgentsController, AiCatalogController],
+  // AgentMediaController antes de AgentsController: /ai-agents/media não pode cair em /ai-agents/:id.
+  controllers: [AgentMediaController, AgentGroupsController, AgentsController, AiCatalogController],
   providers: [
     IdempotencyService,
     AgentGroupsService,
@@ -65,6 +68,7 @@ import { EvalsModule } from './evals/evals.module';
     AgentsService,
     AgentRevisionsService,
     MentionsService,
+    UploadsService,
     AgentTestChatService,
     ToolsCatalogService,
     SkillsCatalogService,

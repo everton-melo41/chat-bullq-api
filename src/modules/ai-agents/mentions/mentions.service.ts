@@ -8,7 +8,7 @@ import { LlmToolDefinition } from '../llm/llm.types';
  * ferramenta VINCULADA ao registro. O modelo só decide QUANDO chamar; o id
  * nunca passa pelo modelo, então ele não consegue trocar o destino.
  */
-export type MentionType = 'agent' | 'tag' | 'department' | 'stage' | 'action';
+export type MentionType = 'agent' | 'tag' | 'department' | 'stage' | 'action' | 'media';
 
 export const MENTION_ACTIONS: Record<string, { label: string; description: string }> = {
   summary: { label: 'resumo', description: 'Gera um resumo da conversa como nota interna para a equipe.' },
@@ -17,7 +17,7 @@ export const MENTION_ACTIONS: Record<string, { label: string; description: strin
   human: { label: 'transferir para humano', description: 'Transfere para atendimento humano com o motivo.' },
 };
 
-const MENTION_RE = /@\[([^\]\n]{1,80})\]\((agent|tag|department|stage|action):([A-Za-z0-9_-]{1,64})\)/g;
+const MENTION_RE = /@\[([^\]\n]{1,80})\]\((agent|tag|department|stage|action|media):([A-Za-z0-9_-]{1,64})\)/g;
 
 export interface ParsedMention { label: string; type: MentionType; id: string; raw: string }
 
@@ -58,17 +58,19 @@ export class MentionsService {
     const mentions = parseMentions(prompt);
     if (!mentions.length) return { text: prompt ?? '', bindings: [], invalid: [] };
     const ids = (t: MentionType) => [...new Set(mentions.filter(m => m.type === t).map(m => m.id))];
-    const [agents, tags, departments, stages] = await Promise.all([
+    const [agents, tags, departments, stages, medias] = await Promise.all([
       this.prisma.aiAgent.findMany({ where: { id: { in: ids('agent') }, organizationId, deletedAt: null, isActive: true, publishedRevisionId: { not: null } }, select: { id: true, name: true } }),
       this.prisma.tag.findMany({ where: { id: { in: ids('tag') }, organizationId }, select: { id: true, name: true } }),
       this.prisma.department.findMany({ where: { id: { in: ids('department') }, organizationId }, select: { id: true, name: true } }),
       this.prisma.pipelineStage.findMany({ where: { id: { in: ids('stage') }, pipeline: { organizationId } }, select: { id: true, name: true, pipelineId: true } }),
+      this.prisma.agentMedia.findMany({ where: { id: { in: ids('media') }, organizationId }, select: { id: true, name: true, kind: true } }),
     ]);
     const found = {
       agent: new Map(agents.map(a => [a.id, a])),
       tag: new Map(tags.map(t => [t.id, t])),
       department: new Map(departments.map(d => [d.id, d])),
       stage: new Map(stages.map(s => [s.id, s])),
+      media: new Map(medias.map(x => [x.id, x])),
     };
 
     const invalid: ParsedMention[] = [];
@@ -86,6 +88,7 @@ export class MentionsService {
   private bind(m: ParsedMention, found: {
     agent: Map<string, { id: string; name: string }>; tag: Map<string, { id: string; name: string }>;
     department: Map<string, { id: string; name: string }>; stage: Map<string, { id: string; name: string; pipelineId: string }>;
+    media: Map<string, { id: string; name: string; kind: string }>;
   }): MentionBinding | null {
     const make = (toolName: string, builtin: string, fixedArgs: Record<string, unknown>, description: string, parameters: Record<string, unknown>): MentionBinding =>
       ({ toolName, builtin, fixedArgs, definition: { name: toolName, description, parameters } });
@@ -108,6 +111,11 @@ export class MentionsService {
         const s = found.stage.get(m.id); if (!s) return null;
         return make(`etapa_${slug(s.name)}`, 'movePipelineCard', { pipelineId: s.pipelineId, stageId: s.id }, `Move a conversa para a etapa "${s.name}" do funil.`, obj());
       }
+      case 'media': {
+        const md = found.media.get(m.id); if (!md) return null;
+        const what = ({ IMAGE: 'a imagem', VIDEO: 'o vídeo', AUDIO: 'o áudio' } as Record<string, string>)[md.kind] ?? 'o documento';
+        return make(`enviar_${slug(md.name)}`, 'sendMedia', { mediaId: md.id }, `Envia ao lead ${what} "${md.name}" da biblioteca.`, obj({ legenda: { type: 'string', description: 'Legenda opcional; se vazio usa a padrão.', maxLength: 1000 } }));
+      }
       case 'action': {
         const a = MENTION_ACTIONS[m.id]; if (!a) return null;
         if (m.id === 'summary') return make('resumo', 'createInternalSummary', {}, a.description, obj({ content: text('Resumo objetivo para a equipe.', 10000) }, ['content']));
@@ -124,17 +132,19 @@ export class MentionsService {
 
   /** Opções para o autocomplete do editor. */
   async options(organizationId: string) {
-    const [agents, tags, departments, stages] = await Promise.all([
+    const [agents, tags, departments, stages, medias] = await Promise.all([
       this.prisma.aiAgent.findMany({ where: { organizationId, deletedAt: null }, select: { id: true, name: true, publishedRevisionId: true }, orderBy: { name: 'asc' } }),
       this.prisma.tag.findMany({ where: { organizationId }, select: { id: true, name: true }, orderBy: { name: 'asc' } }),
       this.prisma.department.findMany({ where: { organizationId }, select: { id: true, name: true }, orderBy: { name: 'asc' } }),
       this.prisma.pipelineStage.findMany({ where: { pipeline: { organizationId } }, select: { id: true, name: true, pipeline: { select: { name: true } } }, orderBy: { order: 'asc' } }),
+      this.prisma.agentMedia.findMany({ where: { organizationId }, select: { id: true, name: true, kind: true }, orderBy: { name: 'asc' } }),
     ]);
     return [
       ...agents.map(a => ({ type: 'agent', id: a.id, label: a.name, hint: a.publishedRevisionId ? 'agente' : 'agente (não publicado)' })),
       ...tags.map(t => ({ type: 'tag', id: t.id, label: t.name, hint: 'etiqueta' })),
       ...departments.map(d => ({ type: 'department', id: d.id, label: d.name, hint: 'departamento' })),
       ...stages.map(s => ({ type: 'stage', id: s.id, label: s.name, hint: `etapa · ${s.pipeline.name}` })),
+      ...medias.map(x => ({ type: 'media', id: x.id, label: x.name, hint: ({ IMAGE: 'imagem', VIDEO: 'vídeo', AUDIO: 'áudio' } as Record<string, string>)[x.kind] ?? 'documento' })),
       ...Object.entries(MENTION_ACTIONS).map(([id, a]) => ({ type: 'action', id, label: a.label, hint: 'ação' })),
     ];
   }

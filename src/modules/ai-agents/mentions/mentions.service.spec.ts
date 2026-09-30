@@ -6,6 +6,7 @@ function service() {
     tag: { findMany: jest.fn(async ({ where }: any) => where.id.in.includes('tg1') ? [{ id: 'tg1', name: 'Aguardando documentos' }] : []) },
     department: { findMany: jest.fn(async () => []) },
     pipelineStage: { findMany: jest.fn(async ({ where }: any) => where.id.in.includes('st1') ? [{ id: 'st1', name: 'Qualificado', pipelineId: 'pl1' }] : []) },
+    agentMedia: { findMany: jest.fn(async ({ where }: any) => where.id.in.includes('md1') ? [{ id: 'md1', name: 'Vídeo BPC', kind: 'VIDEO' }] : []) },
   };
   return { svc: new MentionsService(prisma), prisma };
 }
@@ -30,6 +31,13 @@ describe('menções no prompt', () => {
     expect(out.text).toContain('Auxílio-doença (ferramenta passar_para_auxilio_doenca)');
     expect(out.text).not.toContain('agent:ag1');
     expect(out.invalid).toEqual([]);
+  });
+
+  it('menção de mídia vira envio com id fixo', async () => {
+    const { svc } = service();
+    const out = await svc.compile('org', 'Envie @[Vídeo BPC](media:md1).');
+    expect(out.bindings[0]).toMatchObject({ builtin: 'sendMedia', fixedArgs: { mediaId: 'md1' }, toolName: 'enviar_video_bpc' });
+    expect(out.bindings[0].definition.description).toContain('o vídeo');
   });
 
   it('marca como inválida a menção a registro apagado e tira o token do texto', async () => {

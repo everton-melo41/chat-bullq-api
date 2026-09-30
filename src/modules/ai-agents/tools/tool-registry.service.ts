@@ -1,6 +1,7 @@
 import { HandoffToAgentTool } from './builtin/handoff-to-agent.tool';
+import { SendMediaTool } from './builtin/send-media.tool';
 import { AddTagTool, CreateInternalSummaryTool, UpdateContactFieldsTool, MovePipelineCardTool, AssignConversationTool } from './builtin/studio-actions.tools';
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AiAgentKind } from '@prisma/client';
 import { AiTool as BuiltInSkillImpl, toLlmDefinition } from './tool.types';
@@ -64,7 +65,10 @@ export class ToolRegistry {
     agendarReuniao: AgendarReuniaoTool,
     moveRecoveryCard: MoveRecoveryCardTool,
     handoff: HandoffToAgentTool,
+    @Optional() sendMedia?: SendMediaTool,
   ) {
+    // Só via menção @[mídia](media:id): sem kinds, nunca aparece solta para o modelo.
+    if (sendMedia) this.register(sendMedia, []);
     this.register(handoff, ['ORCHESTRATOR', 'WORKER']);
     this.register(addTagTool, ['ORCHESTRATOR', 'WORKER']);
     this.register(createInternalSummaryTool, ['ORCHESTRATOR', 'WORKER']);

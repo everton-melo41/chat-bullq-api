@@ -1,4 +1,5 @@
 import { HandoffToAgentTool } from './builtin/handoff-to-agent.tool';
+import { SendMediaTool } from './builtin/send-media.tool';
 import { AddTagTool, CreateInternalSummaryTool, UpdateContactFieldsTool, MovePipelineCardTool, AssignConversationTool } from './builtin/studio-actions.tools';
 import { StudioActionsService } from './builtin/studio-actions.service';
 import { PipelinesModule } from '../../pipelines/pipelines.module';
@@ -47,6 +48,7 @@ import { SalesRecoveryModule } from '../../sales-recovery/sales-recovery.module'
   ],
   providers: [
     StudioActionsService,
+    SendMediaTool,
     AddTagTool,
     CreateInternalSummaryTool,
     UpdateContactFieldsTool,
