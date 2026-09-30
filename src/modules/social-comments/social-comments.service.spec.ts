@@ -224,7 +224,7 @@ describe('SocialCommentsService', () => {
       const out = await service.suggest('s1', 'org1', 'ALL');
 
       const req = llm.complete.mock.calls[0][0];
-      expect(req.modelId).toBe('sakana/fugu-ultra-20260615');
+      expect(req.modelId).toBe('sakana/fugu');
       expect(req.messages[0].role).toBe('system');
       expect(req.messages[0].content).toContain('Vendemos cursos.');
       expect(req.messages[1].content).toContain('Promoção de setembro');

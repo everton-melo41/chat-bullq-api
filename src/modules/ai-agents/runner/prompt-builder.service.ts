@@ -591,20 +591,19 @@ export class PromptBuilderService {
       prefix = `[respondeu à mensagem "${String(meta.replyTo.message.text).slice(0, 80)}"] `;
     }
 
-    if (typeof content?.text === 'string') return prefix + (content.text as string);
-    if (typeof content?.caption === 'string') return prefix + (content.caption as string);
-
-    // Audio: surface the cached Whisper transcription if the operator (or
-    // auto-transcribe) already produced one. The LLM cannot listen to audio
-    // bytes, but reading the transcript is exactly the same conversation.
+    // Keep both the caption and transcript if the provider supplied both.
+    // Empty content.text must not hide a completed audio transcription.
     if (message.type === 'AUDIO') {
-      const md = (message.metadata ?? {}) as Record<string, any>;
-      const transcript = md?.transcription?.text;
-      if (typeof transcript === 'string' && transcript.trim().length > 0) {
-        return `[áudio transcrito] ${transcript.trim()}`;
-      }
-      return '[áudio sem transcrição — peça pro cliente repetir por texto]';
+      const transcript = meta?.transcription?.text;
+      const caption = [content?.text, content?.caption]
+        .filter((value): value is string => typeof value === 'string' && !!value.trim());
+      const audioText = typeof transcript === 'string' && transcript.trim()
+        ? `[áudio transcrito] ${transcript.trim()}`
+        : '[áudio sem transcrição — peça pro cliente repetir por texto]';
+      return prefix + [...new Set(caption), audioText].join('\n');
     }
+    if (typeof content?.text === 'string' && content.text.trim()) return prefix + content.text;
+    if (typeof content?.caption === 'string') return prefix + content.caption;
 
     // Template messages (broadcast com botão, lista, mídia + CTA): o body
     // real fica em content.template.text/header/footer. Sem extrair, o

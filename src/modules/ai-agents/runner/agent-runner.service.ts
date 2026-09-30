@@ -76,6 +76,24 @@ const MAX_CHAIN_DEPTH = 3;
 
 @Injectable()
 export class AiAgentRunnerService {
+  /** Never truncate the customer's unanswered burst, including transcripts
+   * and captions. triggerMessageId is an audit pointer, not a context filter. */
+  async loadConversationContext(conversationId: string) {
+    const lastReply = await this.prisma.message.findFirst({
+      where: { conversationId, direction: 'OUTBOUND', status: { in: ['SENT', 'DELIVERED', 'READ'] } },
+      orderBy: { createdAt: 'desc' },
+    });
+    const [recent, unanswered] = await Promise.all([
+      this.prisma.message.findMany({ where: { conversationId }, orderBy: { createdAt: 'desc' }, take: MAX_RECENT_MESSAGES }),
+      this.prisma.message.findMany({ where: {
+        conversationId, direction: 'INBOUND',
+        ...(lastReply ? { createdAt: { gte: lastReply.createdAt } } : {}),
+      }, orderBy: { createdAt: 'desc' } }),
+    ]);
+    return [...new Map([...recent, ...unanswered].map(m => [m.id, m])).values()]
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  }
+
   private readonly logger = new Logger(AiAgentRunnerService.name);
 
   constructor(
@@ -153,11 +171,7 @@ export class AiAgentRunnerService {
         this.prisma.contact.findUniqueOrThrow({
           where: { id: conversation.contactId },
         }),
-        this.prisma.message.findMany({
-          where: { conversationId: conversation.id },
-          orderBy: { createdAt: 'desc' },
-          take: MAX_RECENT_MESSAGES,
-        }),
+        this.loadConversationContext(conversation.id),
         this.prisma.aiAgentMemory.findUnique({
           where: {
             agentId_contactId: {

@@ -32,10 +32,12 @@ describe('Inbound side-effect retries', () => {
 
   it('consumes AI dispatch without reclaiming the inbound message', async () => {
     const processor = Object.create(InboundMessageProcessor.prototype) as any;
+    processor.idempotency = { withLock: jest.fn(async (_key, work) => work()) };
+    processor.inboundQueue = { client: Promise.resolve({ hsetnx: jest.fn(), hset: jest.fn(), expire: jest.fn(), persist: jest.fn(), hgetall: jest.fn().mockResolvedValue({}) }) };
     processor.transcription = { transcribe: jest.fn().mockResolvedValue(undefined) };
     processor.tryAiAgent = jest.fn().mockResolvedValue(undefined);
     await processor.process({ name: 'dispatch-ai', data: { conversationId: 'conv', messageId: 'message', organizationId: 'org', type: 'AUDIO' } });
     expect(processor.transcription.transcribe).toHaveBeenCalledWith('message', 'org');
-    expect(processor.tryAiAgent).toHaveBeenCalledWith('conv', 'message');
+    expect(processor.tryAiAgent).toHaveBeenCalledWith('conv', 'message', true);
   });
 });

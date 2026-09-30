@@ -1,6 +1,6 @@
 import { Processor, WorkerHost, InjectQueue } from '@nestjs/bullmq';
 import { Inject, Logger, forwardRef } from '@nestjs/common';
-import { Job, Queue } from 'bullmq';
+import { DelayedError, Job, Queue } from 'bullmq';
 import { PrismaService } from '../../../database/prisma.service';
 import { IdempotencyService } from './idempotency.service';
 import { ContactResolverService } from './contact-resolver.service';
@@ -48,22 +48,27 @@ interface StatusJobData {
   status: StatusUpdate;
 }
 
+/** Config is read when scheduling so deployments can tune the window. */
 /**
- * Debounce window before firing the agent run. Two reasons we wait:
- * 1) Customers usually send 2-3 messages in a row — without this, every
- *    short message triggers a separate run, racing each other.
- * 2) External flows (ManyChat, n8n, Zapier) often own the first reply on
- *    a new conversation. If our agent answers in <1s the customer sees
- *    two replies fighting for attention. The longer wait gives them room.
- *
- * Each new inbound message on the same conversation resets the timer —
- * we only run the agent once per "burst". 10s covers slower typists who
- * pause mid-thought (3s and 8s both let those bursts slip through and
- * generate two answers fighting each other). Combined with the 1-reply-
- * per-run guard in agent-runner, this is defense in depth: debounce
- * collapses the burst, the runner guarantees a single outbound bubble.
+ * A transcription that never reports back (crash, stuck worker) must not park
+ * the conversation forever: pending markers older than this are ignored and
+ * the agent answers with whatever context exists.
  */
-const AGENT_DEBOUNCE_MS = 10_000;
+const AUDIO_PENDING_MAX_MS = Number(process.env.AGENT_AUDIO_PENDING_MAX_MS ?? 180_000);
+
+export function hasFreshAudioPending(state: Record<string, string>, now = Date.now()): boolean {
+  return Object.values(state).some((v) => {
+    if (!v.startsWith("pending")) return false;
+    const at = Number(v.slice("pending-".length));
+    return !Number.isFinite(at) || at <= 0 || now - at < AUDIO_PENDING_MAX_MS;
+  });
+}
+
+export function agentDebounceMs(audio = false): number {
+  const fallback = audio ? 25_000 : 18_000;
+  const value = Number(process.env[audio ? 'AGENT_DEBOUNCE_AUDIO_MS' : 'AGENT_DEBOUNCE_MS'] ?? fallback);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
 // Inbound uses 5 attempts with exponential 2s backoff (30s total delay).
 // Keep dedup keys for 24h, including after completion/removal of child jobs,
 // to cover retries plus queue/processing delays after the message was saved.
@@ -83,10 +88,6 @@ const NON_TRIGGERING_MESSAGE_TYPES: PrismaContentType[] = [
 @Processor('inbound-messages', { concurrency: 10 })
 export class InboundMessageProcessor extends WorkerHost {
   private readonly logger = new Logger(InboundMessageProcessor.name);
-
-  /** In-memory debounce timers keyed by conversationId. Lost on restart by
-   *  design — a restart means we'd rather reply once late than not at all. */
-  private readonly pendingRuns = new Map<string, NodeJS.Timeout>();
 
   /** Conversations with an agent run currently in flight. While set, new
    *  inbound messages just flag {@link followupNeeded} instead of starting
@@ -118,7 +119,10 @@ export class InboundMessageProcessor extends WorkerHost {
     super();
   }
 
-  async process(job: Job<InboundJobData | StatusJobData | CommentJobData | AiDispatchJobData>): Promise<any> {
+  async process(job: Job<InboundJobData | StatusJobData | CommentJobData | AiDispatchJobData>, token?: string): Promise<any> {
+    if (job.name === 'run-debounced-ai') {
+      return this.processDebouncedRun(job as Job<AiDispatchJobData>, token);
+    }
     if (job.name === 'dispatch-ai') {
       return this.dispatchAi(job.data as AiDispatchJobData);
     }
@@ -323,6 +327,7 @@ export class InboundMessageProcessor extends WorkerHost {
       // Queue the dispatch itself so replaying a persisted message cannot
       // reset the debounce or trigger another AI reply after a later failure.
       if (!isEcho) {
+        if (savedMessage.type === PrismaContentType.AUDIO) await this.markAudioPending(conversationId, savedMessage.id);
         await this.inboundQueue.add('dispatch-ai', {
           conversationId,
           messageId: savedMessage.id,
@@ -389,15 +394,73 @@ export class InboundMessageProcessor extends WorkerHost {
     }
   }
 
+  private debounceKey(id: string) { return `ai-debounce-${id}`; }
+
+  private async markAudioPending(conversationId: string, messageId: string) {
+    await this.idempotency.withLock(`ai-schedule-${conversationId}`, async () => {
+      const redis = await this.inboundQueue.client;
+      const key = this.debounceKey(conversationId);
+      // Keep done markers through inbound retries: a replay must not resurrect
+      // an already completed transcription and block the conversation forever.
+      await redis.hsetnx(key, `audio-${messageId}`, `pending-${Date.now()}`);
+      await redis.persist(key); // Pending work must survive even a long outage.
+    });
+  }
+
   private async dispatchAi(data: AiDispatchJobData): Promise<void> {
     if (data.type === PrismaContentType.AUDIO) {
+      await this.markAudioPending(data.conversationId, data.messageId);
       try {
         await this.transcription.transcribe(data.messageId, data.organizationId);
       } catch (err: any) {
-        this.logger.warn(`Auto-transcribe failed for ${data.messageId}: ${err?.message ?? err} — agent will see [audio] only`);
+        this.logger.warn(`Auto-transcribe failed for ${data.messageId}: ${err?.message ?? err}`);
       }
     }
-    await this.tryAiAgent(data.conversationId, data.messageId);
+    await this.tryAiAgent(data.conversationId, data.messageId, data.type === PrismaContentType.AUDIO);
+    if (data.type === PrismaContentType.AUDIO) {
+      // Publish the post-transcription deadline BEFORE unblocking the worker.
+      await this.idempotency.withLock(`ai-schedule-${data.conversationId}`, async () => {
+        const redis = await this.inboundQueue.client;
+        const key = this.debounceKey(data.conversationId);
+        await redis.hset(key, `audio-${data.messageId}`, 'done');
+        const state = await redis.hgetall(key);
+        if (!state.due && !hasFreshAudioPending(state)) await redis.expire(key, 86400);
+      });
+    }
+  }
+
+  private async processDebouncedRun(job: Job<AiDispatchJobData>, token?: string) {
+    const { conversationId } = job.data;
+    const redis = await this.inboundQueue.client;
+    const key = this.debounceKey(conversationId);
+    const state = await redis.hgetall(key);
+    const due = Number(state.due ?? 0);
+    if (!state.due || hasFreshAudioPending(state) || due > Date.now()) {
+      await this.parkDebouncedJob(job, token);
+      throw new DelayedError();
+    }
+    // Keep the deadline until success: crashes and failed jobs must retry.
+    await this.fireAgentRun(conversationId);
+    // A newer deadline written during the run is retained for the follow-up.
+    await redis.eval("if redis.call('hget', KEYS[1], 'due') == ARGV[1] then redis.call('hdel', KEYS[1], 'due') end", 1, key, String(due));
+    await this.parkDebouncedJob(job, token);
+    throw new DelayedError();
+  }
+
+  private async parkDebouncedJob(job: Job<AiDispatchJobData>, token?: string) {
+    const { conversationId } = job.data;
+    await this.idempotency.withLock(`ai-schedule-${conversationId}`, async () => {
+      const redis = await this.inboundQueue.client;
+      const state = await redis.hgetall(this.debounceKey(conversationId));
+      const pending = hasFreshAudioPending(state);
+      if (!state.due && !pending) await redis.expire(this.debounceKey(conversationId), 86400);
+      // Park idle jobs for a day. The same scheduling mutex covers this state
+      // transition and replacement, closing the active->completed race where
+      // an inbound could otherwise lose its follow-up. Idle jobs never run AI.
+      await job.moveToDelayed(pending ? Date.now() + 1000 : state.due
+        ? Math.max(Number(state.due), Date.now() + 1)
+        : Date.now() + 86400000, token);
+    });
   }
 
   /**
@@ -575,6 +638,7 @@ export class InboundMessageProcessor extends WorkerHost {
   private async tryAiAgent(
     conversationId: string,
     triggerMessageId: string,
+    audio = false,
   ): Promise<void> {
     const conversation = await this.prisma.conversation.findUnique({
       where: { id: conversationId },
@@ -602,42 +666,37 @@ export class InboundMessageProcessor extends WorkerHost {
       return;
     }
 
-    this.scheduleAgentRun(conversationId, triggerMessageId);
+    await this.scheduleAgentRun(conversationId, triggerMessageId, audio);
   }
 
-  /**
-   * Debounced trigger: replaces any in-flight timer for this conversation
-   * with a new one. The latest message always wins — older bursts get
-   * dropped because by the time the timer fires, we re-fetch the latest
-   * trigger anyway. Simple, no extra queue, no Redis state.
-   *
-   * If an agent run is already in flight for this conversation, we don't
-   * stack another one — we just flag that a follow-up is needed. The
-   * in-flight run sees the flag when it finishes and re-schedules.
-   */
-  private scheduleAgentRun(conversationId: string, triggerMessageId: string) {
-    if (this.running.has(conversationId)) {
-      this.followupNeeded.add(conversationId);
-      this.logger.debug(
-        `Agent already running for conv ${conversationId}; deferring trigger ${triggerMessageId}`,
-      );
-      return;
-    }
-
-    const existing = this.pendingRuns.get(conversationId);
-    if (existing) {
-      clearTimeout(existing);
-      this.logger.debug(
-        `Reset agent debounce for conv ${conversationId} (new trigger ${triggerMessageId})`,
-      );
-    }
-
-    const timer = setTimeout(() => {
-      this.pendingRuns.delete(conversationId);
-      this.fireAgentRun(conversationId);
-    }, AGENT_DEBOUNCE_MS);
-
-    this.pendingRuns.set(conversationId, timer);
+  /** Fixed BullMQ job per conversation; Redis also retains deadlines that
+   * arrive while that job is active. No timer is lost on process restart. */
+  private async scheduleAgentRun(conversationId: string, triggerMessageId: string, audio = false) {
+    await this.idempotency.withLock(`ai-schedule-${conversationId}`, async () => {
+      const redis = await this.inboundQueue.client;
+      const key = this.debounceKey(conversationId);
+      const delay = agentDebounceMs(audio);
+      // A text following an audio must not shorten the audio's larger window.
+      const oldDue = Number(await redis.hget(key, 'due') ?? 0);
+      const due = Math.max(oldDue, Date.now() + delay);
+      await redis.hset(key, 'due', String(due));
+      await redis.persist(key);
+      if (this.running.has(conversationId)) this.followupNeeded.add(conversationId);
+      const jobId = `agent-debounce-${Buffer.from(conversationId).toString('hex')}`;
+      const existing = await this.inboundQueue.getJob(jobId);
+      if (existing) {
+        if (await existing.isActive()) return; // Worker reads the durable follow-up deadline.
+        try { await existing.remove(); } catch (error) {
+          if (await existing.isActive()) return;
+          throw error;
+        }
+      }
+      await this.inboundQueue.add('run-debounced-ai', { conversationId, messageId: triggerMessageId }, {
+        jobId, delay: Math.max(0, due - Date.now()), attempts: 3,
+        backoff: { type: 'exponential', delay: 2000 },
+        removeOnComplete: true, removeOnFail: false,
+      });
+    });
   }
 
   /**
@@ -703,6 +762,7 @@ export class InboundMessageProcessor extends WorkerHost {
       this.logger.error(
         `Debounced agent run failed for conv ${conversationId}: ${err?.message ?? err}`,
       );
+      throw err;
     } finally {
       this.running.delete(conversationId);
       // Customer kept typing during the run — re-arm the debounce so the
@@ -711,7 +771,7 @@ export class InboundMessageProcessor extends WorkerHost {
         this.logger.debug(
           `Re-arming debounce for conv ${conversationId} (followup needed)`,
         );
-        this.scheduleAgentRun(conversationId, 'followup');
+        await this.scheduleAgentRun(conversationId, 'followup');
       }
     }
   }
