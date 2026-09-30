@@ -74,6 +74,7 @@ export class AgentRevisionsService {
       if (agent.publishedRevisionId) await db.aiAgentRevision.update({ where: { id: agent.publishedRevisionId }, data: { status: 'ARCHIVED' } });
       const revision = await db.aiAgentRevision.update({ where: { id: agent.draftRevisionId }, data: { status: 'PUBLISHED', publishedAt: new Date(), note } });
       const data: any = Object.fromEntries(SNAPSHOT_FIELDS.map(key => [key, snapshot[key]]));
+      data.entryQuestion = data.entryQuestion ?? null;
       data.modelParams = data.modelParams ?? Prisma.DbNull;
       data.enabledBuiltinTools = data.enabledBuiltinTools ?? Prisma.DbNull;
       await db.aiAgent.update({ where: { id }, data: { ...data, publishedRevisionId: revision.id, draftRevisionId: null } });

@@ -1,3 +1,4 @@
+import { HandoffToAgentTool } from './builtin/handoff-to-agent.tool';
 import { AddTagTool, CreateInternalSummaryTool, UpdateContactFieldsTool, MovePipelineCardTool, AssignConversationTool } from './builtin/studio-actions.tools';
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -62,7 +63,9 @@ export class ToolRegistry {
     lerTranscricaoReuniao: LerTranscricaoReuniaoTool,
     agendarReuniao: AgendarReuniaoTool,
     moveRecoveryCard: MoveRecoveryCardTool,
+    handoff: HandoffToAgentTool,
   ) {
+    this.register(handoff, ['ORCHESTRATOR', 'WORKER']);
     this.register(addTagTool, ['ORCHESTRATOR', 'WORKER']);
     this.register(createInternalSummaryTool, ['ORCHESTRATOR', 'WORKER']);
     this.register(updateContactFieldsTool, ['ORCHESTRATOR', 'WORKER']);

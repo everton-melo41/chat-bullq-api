@@ -1,3 +1,5 @@
+import { IdempotencyService } from '../../messaging/pipeline/idempotency.service';
+import { handoffLimit, MAX_HANDOFF_DEPTH } from '../tools/builtin/handoff-to-agent.tool';
 import { Injectable, Logger } from '@nestjs/common';
 import {
   AiFinalAction,
@@ -72,7 +74,7 @@ interface RunInput {
   chainDepth?: number;
 }
 
-const MAX_CHAIN_DEPTH = 3;
+const MAX_CHAIN_DEPTH = MAX_HANDOFF_DEPTH;
 
 @Injectable()
 export class AiAgentRunnerService {
@@ -115,9 +117,23 @@ export class AiAgentRunnerService {
     private readonly memoryExtractorQueue: Queue,
     @InjectQueue('rag-indexer')
     private readonly ragIndexerQueue: Queue,
+    private readonly idempotency: IdempotencyService,
   ) {}
 
-  async run({
+  async run(input: RunInput): Promise<void> {
+    // Toda a cadeia fica sob o mesmo mutex, inclusive entradas fora do debounce.
+    await this.idempotency.withLock(`ai-run-${input.conversation.id}`, async () => {
+      const conversation = await this.prisma.conversation.findUnique({ where: { id: input.conversation.id } });
+      if (!conversation || conversation.aiEnabled === false) return;
+      const pending = await this.prisma.aiAgentHandoff.findFirst({ where: { conversationId: conversation.id }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
+      if (pending?.entryQuestion && pending.toAgentId === conversation.activeAgentId &&
+        (pending.triggerMessageId === input.triggerMessage.id ||
+          (input.triggerMessage.createdAt && input.triggerMessage.createdAt <= pending.createdAt))) return;
+      await this.runChain({ ...input, conversation, chainDepth: 0 });
+    }, { ttlMs: 30 * 60_000, timeoutMs: 30 * 60_000, renew: true });
+  }
+
+  private async runChain({
     conversation,
     triggerMessage,
     chainDepth = 0,
@@ -148,11 +164,15 @@ export class AiAgentRunnerService {
         return;
       }
     }
+    if (chainDepth === 0 && !selection) return;
     let agent = selection
       ? await this.prisma.aiAgent.findFirst({
           where: { id: selection.agentId, organizationId: conversation.organizationId, publishedRevisionId: { not: null }, isActive: true, deletedAt: null },
         })
-      : await this.resolveAgent(conversation);
+      : await this.prisma.aiAgent.findFirst({
+          where: { id: conversation.activeAgentId ?? '', organizationId: conversation.organizationId,
+            publishedRevisionId: { not: null }, isActive: true, deletedAt: null },
+        });
     if (!agent) {
       this.logger.debug(
         `No agent resolved for conv ${conversation.id} — skipping run`,
@@ -236,7 +256,21 @@ export class AiAgentRunnerService {
     const { llmTools, customSkillsByName, skillInstructions } =
       await this.resolveToolsAndSkills(agent.id, agent.kind, enabledBuiltinTools, skillBindings, conversation.organizationId);
 
+    const receivedHandoff = await this.prisma.aiAgentHandoff.findFirst({
+      where: { conversationId: conversation.id }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    });
+    const groupMembers = channel.aiAgentGroupId ? await this.prisma.aiAgentGroupMember.findMany({
+      where: { groupId: channel.aiAgentGroupId, group: { organizationId: conversation.organizationId },
+        agent: { organizationId: conversation.organizationId, isActive: true, deletedAt: null, publishedRevisionId: { not: null } } },
+      include: { agent: { select: { id: true, name: true } } }, orderBy: { order: 'asc' },
+    }) : [];
+    const groupMember = groupMembers.some(m => m.agentId === agent!.id);
+    for (let i = llmTools.length - 1; i >= 0; i--) {
+      if ((!groupMember && llmTools[i].name === 'handoffToAgent') ||
+        (channel.aiAgentGroupId && ['delegateToAgent', 'handBackToOrchestrator', 'listAvailableAgents'].includes(llmTools[i].name))) llmTools.splice(i, 1);
+    }
     const startedAt = Date.now();
+    let waitForInbound = false;
 
     // Resolve URLs playable de mídia (imagens etc) ANTES de construir
     // o prompt — o provider LLM precisa de URLs públicas pra image
@@ -267,6 +301,8 @@ export class AiAgentRunnerService {
       memoryFacts: (memory?.facts as Record<string, unknown>) ?? null,
       triggerMessage,
       skillInstructions,
+      receivedHandoff: receivedHandoff?.toAgentId === agent.id ? receivedHandoff : null,
+      handoffTargets: groupMember ? groupMembers.filter(m => m.agentId !== agent!.id).map(m => m.agent) : [],
       catalog,
     });
 
@@ -403,6 +439,7 @@ export class AiAgentRunnerService {
                   agentId: agent.id,
                   runId: run.id,
                   triggerMessageId: triggerMessage.id,
+                  chainDepth,
                 },
               );
               if (result.finalAction) {
@@ -463,6 +500,7 @@ export class AiAgentRunnerService {
             agentId: agent.id,
             runId: run.id,
             skillBindings,
+            chainDepth,
             triggerMessageId: triggerMessage.id,
           },
           customSkillsByName,
@@ -479,7 +517,8 @@ export class AiAgentRunnerService {
             name: result.toolName,
             content: JSON.stringify(result.output),
           });
-          if (result.finalAction && finalAction === AiFinalAction.NO_ACTION) {
+          if ((result.output as any)?.waitForInbound) waitForInbound = true;
+          if (result.finalAction && (finalAction === AiFinalAction.NO_ACTION || ['DELEGATED', 'HANDED_BACK', 'TRANSFERRED_TO_HUMAN'].includes(result.finalAction))) {
             finalAction = result.finalAction as AiFinalAction;
           }
           if (
@@ -494,7 +533,8 @@ export class AiAgentRunnerService {
         // stop the loop even if the model would have wanted another turn.
         if (
           finalAction === AiFinalAction.TRANSFERRED_TO_HUMAN ||
-          finalAction === AiFinalAction.CLOSED_CONVERSATION
+          finalAction === AiFinalAction.CLOSED_CONVERSATION ||
+          finalAction === AiFinalAction.DELEGATED || finalAction === AiFinalAction.HANDED_BACK
         ) {
           break;
         }
@@ -552,18 +592,17 @@ export class AiAgentRunnerService {
       // and starts speaking. Bounded by MAX_CHAIN_DEPTH to avoid recursion.
       if (
         finalAction === AiFinalAction.DELEGATED &&
-        chainDepth < MAX_CHAIN_DEPTH
+        !waitForInbound && chainDepth < MAX_CHAIN_DEPTH
       ) {
         const refreshed = await this.prisma.conversation.findUnique({
           where: { id: conversation.id },
         });
-        if (refreshed && refreshed.activeAgentId && refreshed.activeAgentId !== agent.id) {
+        if (refreshed && refreshed.aiEnabled !== false && refreshed.activeAgentId && refreshed.activeAgentId !== agent.id) {
           this.logger.log(
             `Auto-chaining run for new active agent ${refreshed.activeAgentId} on conv ${conversation.id} (depth ${chainDepth + 1})`,
           );
-          // Fire-and-forget — don't block the caller. The worker runs
-          // asynchronously and emits its messages via realtime as usual.
-          this.run({
+          // Aguarda o destino antes de liberar o mutex e o running set.
+          await this.runChain({
             conversation: refreshed,
             triggerMessage,
             chainDepth: chainDepth + 1,
@@ -706,6 +745,11 @@ export class AiAgentRunnerService {
     let repliedInThisBatch = false;
 
     for (const call of calls) {
+      // Nenhuma ação posterior pode executar no agente que já entregou a conversa.
+      if (results.some(r => ['DELEGATED', 'HANDED_BACK', 'TRANSFERRED_TO_HUMAN', 'CLOSED_CONVERSATION'].includes(r.finalAction ?? ''))) {
+        results.push({ toolCallId: call.id, toolName: call.name, output: { ok: false, error: 'Run encerrado por transferência' } });
+        continue;
+      }
       const startedAt = Date.now();
       let output: unknown;
       let errorMessage: string | undefined;
@@ -782,7 +826,24 @@ export class AiAgentRunnerService {
           ) {
             // Built-in (gate de kind + allowlist por agente, ex.: client-ops).
             const tool = this.registry.get(call.name);
-            const result = await tool.execute(call.arguments, ctx);
+            const transition = ['delegateToAgent', 'handBackToOrchestrator', 'handoffToAgent'].includes(call.name);
+            if (transition && call.name !== 'handoffToAgent') {
+              const channel = await this.prisma.channel.findUnique({ where: { id: ctx.channelId } });
+              if (channel?.aiAgentGroupId) throw new Error('Use handoffToAgent para transferir dentro do grupo');
+              const history = await this.prisma.aiAgentHandoff.findMany({ where: { conversationId: ctx.conversationId,
+                createdAt: { gte: new Date(Date.now() - 30 * 60_000) } }, orderBy: { createdAt: 'asc' } });
+              const limit = handoffLimit(history, ctx.agentId, String(call.arguments.agentId ?? ctx.agentId), ctx.chainDepth);
+              if (limit) {
+                await this.prisma.$transaction([
+                  this.prisma.conversation.update({ where: { id: ctx.conversationId }, data: { aiEnabled: false } }),
+                  this.prisma.internalNote.create({ data: { conversationId: ctx.conversationId, content: `IA pausada para revisão humana: ${limit}.`, generatedByAi: true, agentId: ctx.agentId, agentRunId: ctx.runId } }),
+                ]);
+                output = { ok: false, paused: true, error: limit };
+                finalAction = 'TRANSFERRED_TO_HUMAN';
+                break;
+              }
+            }
+            const result = await tool.execute(call.arguments, { ...ctx, alreadyReplied: alreadyRepliedFromPriorIteration || repliedInThisBatch });
             output = result.output;
             finalAction = result.finalAction;
           } else {

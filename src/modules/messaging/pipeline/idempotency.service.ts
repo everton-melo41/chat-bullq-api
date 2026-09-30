@@ -139,7 +139,7 @@ export class IdempotencyService implements OnModuleDestroy {
   async withLock<T>(
     lockKey: string,
     fn: () => Promise<T>,
-    opts: { ttlMs?: number; timeoutMs?: number } = {},
+    opts: { ttlMs?: number; timeoutMs?: number; renew?: boolean } = {},
   ): Promise<T> {
     const ttlMs = opts.ttlMs ?? IdempotencyService.LOCK_TTL_MS;
     const timeoutMs = opts.timeoutMs ?? 5_000;
@@ -147,9 +147,16 @@ export class IdempotencyService implements OnModuleDestroy {
     while (true) {
       const token = await this.acquireLock(lockKey, ttlMs);
       if (token) {
+        const heartbeat = opts.renew ? setInterval(() => {
+          void this.redis.eval(
+            'if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("pexpire", KEYS[1], ARGV[2]) else return 0 end',
+            1, `lock:${lockKey}`, token, ttlMs,
+          ).catch(error => this.logger.error(`Lock renewal failed: ${error.message}`));
+        }, Math.floor(ttlMs / 3)) : null;
         try {
           return await fn();
         } finally {
+          if (heartbeat) clearInterval(heartbeat);
           await this.releaseLock(lockKey, token);
         }
       }

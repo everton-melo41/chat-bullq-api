@@ -135,6 +135,7 @@ model User {
 }
 
 model Organization {
+  aiAgentGroups AiAgentGroup[]
   id        String    @id @default(cuid())
   name      String
   slug      String    @unique
@@ -263,6 +264,8 @@ model Invitation {
 // ─── Channel Hub ─────────────────────────────────
 
 model Channel {
+  aiAgentGroupId String? @map("ai_agent_group_id")
+  aiAgentGroup AiAgentGroup? @relation(fields: [aiAgentGroupId], references: [id], onDelete: SetNull)
   defaultDepartmentId String? @map("default_department_id")
   defaultDepartment Department? @relation("ChannelDefaultDepartment", fields: [defaultDepartmentId], references: [id], onDelete: SetNull)
   departments Department[] @relation("ChannelDepartments")
@@ -1011,6 +1014,9 @@ model AiAgentRevision {
 }
 
 model AiAgent {
+  entryQuestion String? @map("entry_question")
+  groupMemberships AiAgentGroupMember[]
+  initialForGroups AiAgentGroup[] @relation("GroupInitialAgent")
   enabledBuiltinTools Json? @map("enabled_builtin_tools")
   publishedRevisionId String? @map("published_revision_id")
   draftRevisionId String? @map("draft_revision_id")
@@ -1327,6 +1333,8 @@ model AiToolCall {
 }
 
 model AiAgentHandoff {
+  entryQuestion String? @map("entry_question")
+  triggerMessageId String? @map("trigger_message_id")
   id             String   @id @default(cuid())
   conversationId String   @map("conversation_id")
   fromAgentId    String?  @map("from_agent_id")
@@ -1339,6 +1347,8 @@ model AiAgentHandoff {
   fromAgent    AiAgent?     @relation("HandoffFrom", fields: [fromAgentId], references: [id], onDelete: SetNull)
   toAgent      AiAgent      @relation("HandoffTo", fields: [toAgentId], references: [id], onDelete: Cascade)
 
+  @@index([conversationId, createdAt])
+  @@index([conversationId, triggerMessageId])
   @@index([conversationId], name: "idx_ai_handoff_conv")
   @@map("ai_agent_handoffs")
 }
@@ -1821,4 +1831,29 @@ model AiActionReceipt {
   createdAt DateTime @default(now()) @map("created_at")
   @@index([agentRunId])
   @@map("ai_action_receipts")
+}
+
+model AiAgentGroup {
+  id String @id @default(cuid())
+  organizationId String @map("organization_id")
+  name String
+  description String?
+  initialAgentId String @map("initial_agent_id")
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  initialAgent AiAgent @relation("GroupInitialAgent", fields: [initialAgentId], references: [id], onDelete: Restrict)
+  members AiAgentGroupMember[]
+  channels Channel[]
+  @@index([organizationId])
+  @@map("ai_agent_groups")
+}
+
+model AiAgentGroupMember {
+  agentId String @map("agent_id")
+  groupId String @map("group_id")
+  order Int @default(0) @map("order")
+  agent AiAgent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  group AiAgentGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  @@id([groupId, agentId])
+  @@index([agentId])
+  @@map("ai_agent_group_members")
 }

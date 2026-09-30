@@ -1,3 +1,6 @@
+import { IdempotencyService } from '../messaging/pipeline/idempotency.service';
+import { AgentGroupsController } from './groups/agent-groups.controller';
+import { AgentGroupsService } from './groups/agent-groups.service';
 import { AgentRevisionsService } from './agents/revisions.service';
 import { Module, forwardRef } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
@@ -48,8 +51,10 @@ import { EvalsModule } from './evals/evals.module';
     RagModule,
     EvalsModule,
   ],
-  controllers: [AgentsController, AiCatalogController],
+  controllers: [AgentGroupsController, AgentsController, AiCatalogController],
   providers: [
+    IdempotencyService,
+    AgentGroupsService,
     PromptBuilderService,
     AiAgentRunnerService,
     ModelRouterService,

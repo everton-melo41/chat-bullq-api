@@ -1,5 +1,5 @@
 /** Campos versionados; kind representa o papel (role) do agente. */
-export const SNAPSHOT_FIELDS = ["name", "description", "avatarUrl", "kind", "category", "capabilities", "parentAgentId", "department", "squad", "modelId", "modelParams", "systemPrompt", "operationalContext", "operationalContextUpdatedAt", "temperature", "maxTokens", "canRespondDirectly", "isActive", "followUpEnabled", "followUpCadenceHours", "enabledBuiltinTools"] as const;
+export const SNAPSHOT_FIELDS = ["entryQuestion", "name", "description", "avatarUrl", "kind", "category", "capabilities", "parentAgentId", "department", "squad", "modelId", "modelParams", "systemPrompt", "operationalContext", "operationalContextUpdatedAt", "temperature", "maxTokens", "canRespondDirectly", "isActive", "followUpEnabled", "followUpCadenceHours", "enabledBuiltinTools"] as const;
 export function agentSnapshot(agent: any, skills: any[] = []) {
   return JSON.parse(JSON.stringify({
     ...Object.fromEntries(SNAPSHOT_FIELDS.map(key => [key, agent[key] ?? null])),

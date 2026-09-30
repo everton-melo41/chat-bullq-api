@@ -12,11 +12,14 @@ function runnerFixture() {
     organization: { findUniqueOrThrow: jest.fn().mockResolvedValue({ id: 'org' }) },
     channel: { findUniqueOrThrow: jest.fn().mockResolvedValue({ type: 'WHATSAPP' }) },
     contact: { findUniqueOrThrow: jest.fn().mockResolvedValue({ id: 'contact' }) },
+    conversation: { findUnique: jest.fn().mockImplementation(async () => input.conversation) },
+    aiAgentHandoff: { findFirst: jest.fn().mockResolvedValue(null) },
     aiAgentMemory: { findUnique: jest.fn().mockResolvedValue(null) },
   };
   const stop = new Error('stop after collecting prompt');
   Object.assign(runner, {
     prisma,
+    idempotency: { withLock: jest.fn(async (_key, work) => work()) },
     logger: { debug: jest.fn() },
     agentRouter: { selectAgent: jest.fn().mockResolvedValue({ agentId: 'agent' }) },
     catalogSync: { getCompactCatalog: jest.fn().mockResolvedValue([]) },

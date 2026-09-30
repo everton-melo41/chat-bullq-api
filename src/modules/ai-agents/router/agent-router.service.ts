@@ -78,6 +78,17 @@ export class AgentRouterService {
       }
     }
 
+    const channel = await this.prisma.channel.findUnique({
+      where: { id: conversation.channelId, organizationId: conversation.organizationId },
+      select: { aiAgentGroupId: true },
+    });
+    if (channel?.aiAgentGroupId) {
+      const agent = await this.groupInitialAgent(channel.aiAgentGroupId, conversation.organizationId);
+      // Um grupo configurado nunca cai em um agente de fora do grupo.
+      return agent ? { agentId: agent.id, agentName: agent.name, classifiedIntent: null,
+        classifierConfidence: null, skippedOrchestrator: false, classifierCostUsd: 0 } : null;
+    }
+
     // 2. Carrega threshold da org
     const org = await this.prisma.organization.findUnique({
       where: { id: conversation.organizationId },
@@ -153,6 +164,14 @@ export class AgentRouterService {
     return fallback;
   }
 
+  private async groupInitialAgent(groupId: string, organizationId: string) {
+    const group = await this.prisma.aiAgentGroup.findFirst({ where: { id: groupId, organizationId } });
+    if (!group) return null;
+    return this.prisma.aiAgent.findFirst({ where: { id: group.initialAgentId, organizationId,
+      isActive: true, deletedAt: null, publishedRevisionId: { not: null },
+      groupMemberships: { some: { groupId } } }, select: { id: true, name: true } });
+  }
+
   private async fallbackToOrchestrator(
     conversation: Conversation,
   ): Promise<AgentSelection | null> {
@@ -225,7 +244,7 @@ export class AgentRouterService {
     const [channel, org] = await Promise.all([
       this.prisma.channel.findUnique({
         where: { id: conversation.channelId },
-        select: { aiEnabled: true },
+        select: { aiEnabled: true, aiAgentGroupId: true },
       }),
       this.prisma.organization.findUnique({
         where: { id: conversation.organizationId },
@@ -250,7 +269,9 @@ export class AgentRouterService {
 
     // Mesmo com override pra ON, ainda precisa existir um agente ativo
     // pra atender essa conversa. Sem isso, não tem o que rodar.
-    if (!conversation.activeAgentId) {
+    if (!conversation.activeAgentId && channel?.aiAgentGroupId) {
+      if (!await this.groupInitialAgent(channel.aiAgentGroupId, conversation.organizationId)) return { handle: false, reason: 'no-published-initial-agent' };
+    } else if (!conversation.activeAgentId) {
       const link = await this.prisma.aiAgentChannel.findFirst({
         where: {
           channelId: conversation.channelId,

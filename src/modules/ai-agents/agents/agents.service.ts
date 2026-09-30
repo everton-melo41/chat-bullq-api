@@ -22,7 +22,8 @@ export class AgentsService {
     const agent = await this.prisma.aiAgent.create({
       data: {
         organizationId,
-        enabledBuiltinTools: dto.enabledBuiltinTools === null ? Prisma.DbNull : dto.enabledBuiltinTools ?? ['addTag', 'createInternalSummary', 'updateContactFields', 'movePipelineCard', 'assignConversation', 'replyToConversation', 'transferToHuman', 'tagConversation', 'listAvailableAgents', 'delegateToAgent', 'handBackToOrchestrator'],
+        enabledBuiltinTools: dto.enabledBuiltinTools === null ? Prisma.DbNull : dto.enabledBuiltinTools ?? ['addTag', 'createInternalSummary', 'updateContactFields', 'movePipelineCard', 'assignConversation', 'replyToConversation', 'transferToHuman', 'tagConversation', 'listAvailableAgents', 'delegateToAgent', 'handBackToOrchestrator', 'handoffToAgent'],
+        entryQuestion: dto.entryQuestion,
         name: dto.name,
         description: dto.description,
         avatarUrl: dto.avatarUrl,

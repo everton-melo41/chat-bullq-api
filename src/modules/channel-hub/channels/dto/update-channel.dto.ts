@@ -2,6 +2,8 @@ import { IsString, IsOptional, IsObject, IsBoolean, IsIn } from 'class-validator
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
 export class UpdateChannelDto {
+  @IsOptional() @IsString()
+  aiAgentGroupId?: string | null;
   @IsOptional()
   @IsString()
   defaultDepartmentId?: string | null;

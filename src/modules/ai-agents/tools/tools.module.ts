@@ -1,3 +1,4 @@
+import { HandoffToAgentTool } from './builtin/handoff-to-agent.tool';
 import { AddTagTool, CreateInternalSummaryTool, UpdateContactFieldsTool, MovePipelineCardTool, AssignConversationTool } from './builtin/studio-actions.tools';
 import { StudioActionsService } from './builtin/studio-actions.service';
 import { PipelinesModule } from '../../pipelines/pipelines.module';
@@ -56,6 +57,7 @@ import { SalesRecoveryModule } from '../../sales-recovery/sales-recovery.module'
     TagConversationTool,
     ListAvailableAgentsTool,
     DelegateToAgentTool,
+    HandoffToAgentTool,
     HandBackToOrchestratorTool,
     GetProductPitchTool,
     CheckBonusEligibilityTool,

@@ -5,6 +5,8 @@ import { LlmToolDefinition } from '../llm/llm.types';
  * need to mutate the system on behalf of the agent.
  */
 export interface ToolContext {
+  chainDepth?: number;
+  alreadyReplied?: boolean;
   skillBindings?: { skillId: string; requiresApproval: boolean }[];
   organizationId: string;
   conversationId: string;

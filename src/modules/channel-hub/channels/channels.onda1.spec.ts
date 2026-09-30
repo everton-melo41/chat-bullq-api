@@ -23,3 +23,18 @@ describe('Channel default department validation', () => {
     expect(service.repository.update).toHaveBeenNthCalledWith(2, 'channel', { defaultDepartmentId: null });
   });
 });
+
+describe('Channel agent group validation', () => {
+  it('valida organização do grupo e permite desvincular', async () => {
+    const service = Object.assign(Object.create(ChannelsService.prototype), {
+      findOne: jest.fn(), prisma: { aiAgentGroup: { findFirst: jest.fn().mockResolvedValue(null) } }, repository: { update: jest.fn() },
+    });
+    await expect(service.update('channel', 'org', { aiAgentGroupId: 'foreign' })).rejects.toBeInstanceOf(BadRequestException);
+    expect(service.repository.update).not.toHaveBeenCalled();
+    expect(service.prisma.aiAgentGroup.findFirst).toHaveBeenCalledWith({ where: { id: 'foreign', organizationId: 'org' } });
+    service.prisma.aiAgentGroup.findFirst.mockResolvedValue({ id: 'group' });
+    await service.update('channel', 'org', { aiAgentGroupId: 'group' });
+    await service.update('channel', 'org', { aiAgentGroupId: null });
+    expect(service.repository.update).toHaveBeenLastCalledWith('channel', { aiAgentGroupId: null });
+  });
+});

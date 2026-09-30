@@ -203,6 +203,11 @@ export class ChannelsService {
   ) {
     await this.findOne(id, organizationId);
 
+    if (dto.aiAgentGroupId) {
+      const group = await this.prisma.aiAgentGroup.findFirst({ where: { id: dto.aiAgentGroupId, organizationId } });
+      if (!group) throw new BadRequestException("Grupo inválido para esta organização");
+    }
+
     if (dto.defaultDepartmentId) {
       const department = await this.prisma.department.findFirst({
         where: { id: dto.defaultDepartmentId, organizationId, channelId: id, deletedAt: null },
