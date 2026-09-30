@@ -1,3 +1,4 @@
+import { AgentRevisionsService } from './agents/revisions.service';
 import { Module, forwardRef } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from '../../database/prisma.module';
@@ -55,6 +56,7 @@ import { EvalsModule } from './evals/evals.module';
     AgentRunJanitorService,
     AgentRouterService,
     AgentsService,
+    AgentRevisionsService,
     ToolsCatalogService,
     SkillsCatalogService,
     CatalogSyncService,

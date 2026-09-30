@@ -1,3 +1,5 @@
+import { AgentRevisionsService } from './revisions.service';
+import { Prisma } from '@prisma/client';
 import {
   BadRequestException,
   Injectable,
@@ -11,15 +13,16 @@ import { AssignAgentChannelDto } from './dto/assign-channel.dto';
 
 @Injectable()
 export class AgentsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly revisions: AgentRevisionsService) {}
 
-  async create(organizationId: string, dto: CreateAgentDto) {
+  async create(organizationId: string, dto: CreateAgentDto, userId?: string) {
     if (dto.parentAgentId) {
       await this.assertParentExists(organizationId, dto.parentAgentId);
     }
     const agent = await this.prisma.aiAgent.create({
       data: {
         organizationId,
+        enabledBuiltinTools: dto.enabledBuiltinTools === null ? Prisma.DbNull : dto.enabledBuiltinTools ?? ['addTag', 'createInternalSummary', 'updateContactFields', 'movePipelineCard', 'assignConversation', 'replyToConversation', 'transferToHuman', 'tagConversation', 'listAvailableAgents', 'delegateToAgent', 'handBackToOrchestrator'],
         name: dto.name,
         description: dto.description,
         avatarUrl: dto.avatarUrl,
@@ -61,7 +64,8 @@ export class AgentsService {
         skipDuplicates: true,
       });
     }
-    return agent;
+    await this.revisions.save(organizationId, agent.id, {}, userId);
+    return this.findOne(organizationId, agent.id);
   }
 
   async list(organizationId: string) {
@@ -69,6 +73,8 @@ export class AgentsService {
       where: { organizationId, deletedAt: null },
       orderBy: [{ kind: 'asc' }, { createdAt: 'asc' }],
       include: {
+        draftRevision: true,
+        publishedRevision: true,
         channels: {
           include: {
             channel: { select: { id: true, name: true, type: true } },
@@ -82,6 +88,8 @@ export class AgentsService {
     const agent = await this.prisma.aiAgent.findFirst({
       where: { id, organizationId, deletedAt: null },
       include: {
+        draftRevision: true,
+        publishedRevision: true,
         channels: {
           include: {
             channel: { select: { id: true, name: true, type: true } },
@@ -93,48 +101,10 @@ export class AgentsService {
     return agent;
   }
 
-  async update(organizationId: string, id: string, dto: UpdateAgentDto) {
-    const existing = await this.findOne(organizationId, id);
-
-    // Validate org-tree integrity when changing parent.
-    // Two failure modes: (a) self-reference, (b) cycle via descendant.
-    if (dto.parentAgentId !== undefined && dto.parentAgentId !== null) {
-      if (dto.parentAgentId === id) {
-        throw new BadRequestException(
-          'Um agent não pode reportar a si mesmo',
-        );
-      }
-      await this.assertParentExists(organizationId, dto.parentAgentId);
-      const wouldCycle = await this.isDescendantOf(
-        organizationId,
-        dto.parentAgentId,
-        id,
-      );
-      if (wouldCycle) {
-        throw new BadRequestException(
-          'Hierarquia inválida: o agent escolhido como chefe é subordinado deste agent (criaria um ciclo)',
-        );
-      }
-    }
-
-    // Touch operationalContextUpdatedAt apenas quando o conteúdo mudou de
-    // verdade. Se o cliente reenvia o mesmo texto (ex: salvou outros
-    // campos), não bombardeia o "atualizado em" — operador vai confiar
-    // nesse timestamp pra saber se a memória ainda tá viva.
-    const operationalContextChanged =
-      dto.operationalContext !== undefined &&
-      dto.operationalContext !== (existing as any).operationalContext;
-
-    return this.prisma.aiAgent.update({
-      where: { id },
-      data: {
-        ...dto,
-        modelParams: dto.modelParams as object | undefined,
-        ...(operationalContextChanged
-          ? { operationalContextUpdatedAt: new Date() }
-          : {}),
-      },
-    });
+  /** Compatibilidade: PATCH grava somente o rascunho. Publicação é explícita. */
+  async update(organizationId: string, id: string, dto: UpdateAgentDto, userId?: string) {
+    await this.revisions.save(organizationId, id, dto, userId);
+    return this.findOne(organizationId, id);
   }
 
   /** Verifies a candidate parent exists in the same org and isn't soft-deleted. */
@@ -698,6 +668,12 @@ export class AgentsService {
    */
   async listSkills(organizationId: string, agentId: string) {
     await this.assertOwnership(organizationId, agentId);
+    const agent = await this.findOne(organizationId, agentId);
+    const draftBindings = (agent.draftRevision?.snapshot as any)?.skills;
+    if (draftBindings) {
+      const skills = await this.prisma.aiSkill.findMany({ where: { id: { in: draftBindings.map((b: any) => b.skillId) }, organizationId } });
+      return draftBindings.map((b: any) => ({ ...b, skill: skills.find(s => s.id === b.skillId) }));
+    }
     const rows = await this.prisma.aiAgentSkill.findMany({
       where: { agentId },
       include: {
@@ -729,20 +705,10 @@ export class AgentsService {
     agentId: string,
     skillId: string,
     requiresApproval: boolean,
+    userId?: string,
   ) {
     await this.assertOwnership(organizationId, agentId);
-    const existing = await this.prisma.aiAgentSkill.findUnique({
-      where: { agentId_skillId: { agentId, skillId } },
-    });
-    if (!existing) {
-      throw new NotFoundException(
-        `Skill ${skillId} não está atribuída ao agent ${agentId}`,
-      );
-    }
-    return this.prisma.aiAgentSkill.update({
-      where: { agentId_skillId: { agentId, skillId } },
-      data: { requiresApproval },
-    });
+    return this.revisions.save(organizationId, agentId, { skillApproval: { skillId, requiresApproval } }, userId);
   }
 
   private async assertOwnership(organizationId: string, agentId: string) {

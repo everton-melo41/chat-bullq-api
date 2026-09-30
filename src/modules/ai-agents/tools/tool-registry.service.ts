@@ -149,8 +149,10 @@ export class ToolRegistry {
   getLlmDefinitionsForKind(
     kind: AiAgentKind,
     agentId?: string,
+    enabledBuiltinTools?: string[] | null,
   ): LlmToolDefinition[] {
     return [...this.tools.values()]
+      .filter(t => enabledBuiltinTools == null || enabledBuiltinTools.includes(t.name))
       .filter((t) => this.scope.get(t.name)?.has(kind) ?? false)
       .filter((t) => {
         const allowlist = this.agentAllowlist.get(t.name);
@@ -168,7 +170,9 @@ export class ToolRegistry {
     toolName: string,
     kind: AiAgentKind,
     agentId: string,
+    enabledBuiltinTools?: string[] | null,
   ): boolean {
+    if (enabledBuiltinTools != null && !enabledBuiltinTools.includes(toolName)) return false;
     if (!this.isAllowedForKind(toolName, kind)) return false;
     const allowlist = this.agentAllowlist.get(toolName);
     return !allowlist || allowlist.has(agentId);

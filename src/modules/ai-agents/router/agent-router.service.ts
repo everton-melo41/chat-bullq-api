@@ -63,7 +63,7 @@ export class AgentRouterService {
     // 1. Conversa em andamento — mantém o agent atual
     if (conversation.activeAgentId) {
       const agent = await this.prisma.aiAgent.findUnique({
-        where: { id: conversation.activeAgentId },
+        where: { id: conversation.activeAgentId, organizationId: conversation.organizationId, publishedRevisionId: { not: null }, isActive: true, deletedAt: null },
         select: { id: true, name: true },
       });
       if (agent) {
@@ -114,6 +114,7 @@ export class AgentRouterService {
         where: {
           organizationId: conversation.organizationId,
           name: classification.suggestedAgent,
+          publishedRevisionId: { not: null },
           isActive: true,
           deletedAt: null,
         },
@@ -162,7 +163,7 @@ export class AgentRouterService {
       where: {
         channelId: conversation.channelId,
         mode: 'AUTONOMOUS',
-        agent: { isActive: true, deletedAt: null, kind: 'ORCHESTRATOR' },
+        agent: { publishedRevisionId: { not: null }, isActive: true, deletedAt: null, kind: 'ORCHESTRATOR' },
       },
       include: {
         agent: { select: { id: true, name: true } },
@@ -175,7 +176,7 @@ export class AgentRouterService {
         where: {
           channelId: conversation.channelId,
           mode: 'AUTONOMOUS',
-          agent: { isActive: true, deletedAt: null },
+          agent: { publishedRevisionId: { not: null }, isActive: true, deletedAt: null },
         },
         include: {
           agent: { select: { id: true, name: true } },
@@ -254,7 +255,7 @@ export class AgentRouterService {
         where: {
           channelId: conversation.channelId,
           mode: 'AUTONOMOUS',
-          agent: { isActive: true, deletedAt: null },
+          agent: { publishedRevisionId: { not: null }, isActive: true, deletedAt: null },
         },
       });
       if (!link) {

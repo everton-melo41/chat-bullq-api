@@ -166,7 +166,7 @@ export class HttpToolExecutorService {
 
   async approvalGate(skill: AiSkill, input: Record<string, unknown>, ctx: ToolContext, options: { bypassPendingGate?: boolean } = {}): Promise<ToolResult | null> {
     if (skill.organizationId !== ctx.organizationId) throw new Error('Skill outside organization');
-    const link = await this.prisma.aiAgentSkill.findUnique({
+    const link = ctx.skillBindings ? ctx.skillBindings.find(b => b.skillId === skill.id) : await this.prisma.aiAgentSkill.findUnique({
       where: { agentId_skillId: { agentId: ctx.agentId, skillId: skill.id } },
       select: { requiresApproval: true },
     });

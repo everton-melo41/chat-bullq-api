@@ -1,3 +1,4 @@
+import { AgentRevisionsService } from '../agents/revisions.service';
 import {
   BadRequestException,
   Injectable,
@@ -8,7 +9,7 @@ import { UpsertSkillDto } from './dto/upsert-skill.dto';
 
 @Injectable()
 export class SkillsCatalogService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly revisions: AgentRevisionsService) {}
 
   async list(organizationId: string) {
     return this.prisma.aiSkill.findMany({
@@ -155,6 +156,7 @@ export class SkillsCatalogService {
     organizationId: string,
     agentId: string,
     skillIds: string[],
+    userId?: string,
   ) {
     await this.assertAgent(organizationId, agentId);
     if (skillIds.length > 0) {
@@ -165,16 +167,7 @@ export class SkillsCatalogService {
         throw new BadRequestException('Algum skillId não pertence à org.');
       }
     }
-    await this.prisma.$transaction([
-      this.prisma.aiAgentSkill.deleteMany({ where: { agentId } }),
-      ...(skillIds.length > 0
-        ? [
-            this.prisma.aiAgentSkill.createMany({
-              data: skillIds.map((skillId) => ({ agentId, skillId })),
-            }),
-          ]
-        : []),
-    ]);
+    return this.revisions.save(organizationId, agentId, { skillIds }, userId);
   }
 
   // ─── helpers ────────────────────────────────────────────────────

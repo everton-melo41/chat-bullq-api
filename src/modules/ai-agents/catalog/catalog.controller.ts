@@ -129,8 +129,9 @@ export class AiCatalogController {
     @CurrentOrg('id') orgId: string,
     @Param('agentId') agentId: string,
     @Body() body: { skillIds: string[] },
+    @CurrentUser('id') userId: string,
   ) {
-    return this.skills.setAgentSkills(orgId, agentId, body.skillIds ?? []);
+    return this.skills.setAgentSkills(orgId, agentId, body.skillIds ?? [], userId);
   }
 
 }

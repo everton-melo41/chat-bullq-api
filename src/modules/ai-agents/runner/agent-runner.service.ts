@@ -148,9 +148,9 @@ export class AiAgentRunnerService {
         return;
       }
     }
-    const agent = selection
+    let agent = selection
       ? await this.prisma.aiAgent.findFirst({
-          where: { id: selection.agentId, isActive: true, deletedAt: null },
+          where: { id: selection.agentId, organizationId: conversation.organizationId, publishedRevisionId: { not: null }, isActive: true, deletedAt: null },
         })
       : await this.resolveAgent(conversation);
     if (!agent) {
@@ -159,6 +159,16 @@ export class AiAgentRunnerService {
       );
       return;
     }
+
+    // Pin the published revision once for the entire run, including dispatch.
+    const revision = agent.publishedRevisionId ? await this.prisma.aiAgentRevision.findFirst({
+      where: { id: agent.publishedRevisionId, agentId: agent.id, organizationId: conversation.organizationId },
+    }) : null;
+    if (!revision) return; // New agents remain inert until first publication.
+    const snapshot = revision.snapshot as any;
+    agent = { ...agent, ...snapshot } as NonNullable<typeof agent>;
+    const enabledBuiltinTools = snapshot.enabledBuiltinTools as string[] | null;
+    const skillBindings = snapshot.skills as { skillId: string; requiresApproval: boolean }[];
 
     const [organization, channel, contact, recentMessages, memory, catalog] =
       await Promise.all([
@@ -192,6 +202,7 @@ export class AiAgentRunnerService {
         conversationId: conversation.id,
         agentId: agent.id,
         triggerMessageId: triggerMessage.id,
+        revisionId: revision.id,
         modelId: agent.modelId,
         status: AiRunStatus.RUNNING,
         classifiedIntent: selection?.classifiedIntent ?? null,
@@ -223,7 +234,7 @@ export class AiAgentRunnerService {
     // Custom HTTP tools live in the DB; we keep their rows here so the
     // runner can hand them to HttpToolExecutor on tool-call time.
     const { llmTools, customSkillsByName, skillInstructions } =
-      await this.resolveToolsAndSkills(agent.id, agent.kind);
+      await this.resolveToolsAndSkills(agent.id, agent.kind, enabledBuiltinTools, skillBindings, conversation.organizationId);
 
     const startedAt = Date.now();
 
@@ -376,7 +387,7 @@ export class AiAgentRunnerService {
           // or a stub too short to be a real reply. Sending such text would
           // look like the agent literally typing "Human: oi" to the user.
           const tooShortForReal = text.length < 4;
-          if (text && !tooShortForReal && finalAction === AiFinalAction.NO_ACTION) {
+          if (text && !tooShortForReal && finalAction === AiFinalAction.NO_ACTION && this.registry.isAllowedForAgent('replyToConversation', agent.kind, agent.id, enabledBuiltinTools)) {
             this.logger.log(
               `Run ${run.id}: model emitted text without replyToConversation, auto-sending as fallback`,
             );
@@ -451,11 +462,13 @@ export class AiAgentRunnerService {
             channelId: conversation.channelId,
             agentId: agent.id,
             runId: run.id,
+            skillBindings,
             triggerMessageId: triggerMessage.id,
           },
           customSkillsByName,
           replyAlreadySuccessful,
           agent.kind,
+          enabledBuiltinTools,
         );
 
         for (const result of toolResults) {
@@ -633,7 +646,7 @@ export class AiAgentRunnerService {
   private async resolveAgent(conversation: Conversation) {
     if (conversation.activeAgentId) {
       const active = await this.prisma.aiAgent.findFirst({
-        where: { id: conversation.activeAgentId, isActive: true, deletedAt: null },
+        where: { id: conversation.activeAgentId, organizationId: conversation.organizationId, publishedRevisionId: { not: null }, isActive: true, deletedAt: null },
       });
       if (active) return active;
     }
@@ -645,7 +658,7 @@ export class AiAgentRunnerService {
       where: {
         channelId: conversation.channelId,
         mode: 'AUTONOMOUS',
-        agent: { isActive: true, deletedAt: null, kind: 'ORCHESTRATOR' },
+        agent: { publishedRevisionId: { not: null }, isActive: true, deletedAt: null, kind: 'ORCHESTRATOR' },
       },
       include: { agent: true },
       orderBy: { createdAt: 'asc' },
@@ -657,7 +670,7 @@ export class AiAgentRunnerService {
       where: {
         channelId: conversation.channelId,
         mode: 'AUTONOMOUS',
-        agent: { isActive: true, deletedAt: null },
+        agent: { publishedRevisionId: { not: null }, isActive: true, deletedAt: null },
       },
       include: { agent: true },
       orderBy: { createdAt: 'asc' },
@@ -671,6 +684,7 @@ export class AiAgentRunnerService {
     customSkillsByName: Map<string, AiSkill & { tool: AiTool | null }>,
     alreadyRepliedFromPriorIteration: boolean,
     agentKind: 'ORCHESTRATOR' | 'WORKER' = 'WORKER',
+    enabledBuiltinTools?: string[] | null,
   ): Promise<
     Array<{
       toolCallId: string;
@@ -764,7 +778,7 @@ export class AiAgentRunnerService {
             finalAction = result.finalAction;
           } else if (
             this.registry.has(call.name) &&
-            this.registry.isAllowedForAgent(call.name, agentKind, ctx.agentId)
+            this.registry.isAllowedForAgent(call.name, agentKind, ctx.agentId, enabledBuiltinTools)
           ) {
             // Built-in (gate de kind + allowlist por agente, ex.: client-ops).
             const tool = this.registry.get(call.name);
@@ -905,15 +919,17 @@ export class AiAgentRunnerService {
   private async resolveToolsAndSkills(
     agentId: string,
     kind: 'ORCHESTRATOR' | 'WORKER',
+    enabledBuiltinTools?: string[] | null,
+    bindings?: { skillId: string; requiresApproval: boolean }[],
+    organizationId?: string,
   ): Promise<{
     llmTools: LlmToolDefinition[];
     customSkillsByName: Map<string, AiSkill & { tool: AiTool | null }>;
     skillInstructions: string[];
   }> {
-    const skillLinks = await this.prisma.aiAgentSkill.findMany({
-      where: { agentId },
-      include: { skill: { include: { tool: true } } },
-    });
+    const skillLinks = bindings
+      ? (await this.prisma.aiSkill.findMany({ where: { id: { in: bindings.map(b => b.skillId) }, organizationId }, include: { tool: true } })).map(skill => ({ skill }))
+      : await this.prisma.aiAgentSkill.findMany({ where: { agentId }, include: { skill: { include: { tool: true } } } });
 
     const skillInstructions: string[] = [];
     const customSkillsByName = new Map<
@@ -944,7 +960,7 @@ export class AiAgentRunnerService {
 
     // Built-in defaults — always available based on agent kind (tools com
     // allowlist de agentes só entram pro agente listado, ex.: client-ops).
-    const defaultLlm = this.registry.getLlmDefinitionsForKind(kind, agentId);
+    const defaultLlm = this.registry.getLlmDefinitionsForKind(kind, agentId, enabledBuiltinTools);
 
     const seen = new Set<string>();
     const llmTools: LlmToolDefinition[] = [];

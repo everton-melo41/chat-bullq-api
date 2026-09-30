@@ -984,7 +984,39 @@ enum AiFinalAction {
   NO_ACTION
 }
 
+enum AiAgentRevisionStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+model AiAgentRevision {
+  id String @id @default(cuid())
+  agentId String @map("agent_id")
+  organizationId String @map("organization_id")
+  version Int
+  status AiAgentRevisionStatus
+  snapshot Json
+  createdById String? @map("created_by_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  publishedAt DateTime? @map("published_at")
+  note String?
+  agent AiAgent @relation("AgentRevisions", fields: [agentId], references: [id], onDelete: Cascade)
+  publishedAgents AiAgent[] @relation("PublishedRevision")
+  draftAgents AiAgent[] @relation("DraftRevision")
+  runs AiAgentRun[]
+  @@unique([agentId, version])
+  @@index([organizationId, agentId])
+  @@map("ai_agent_revisions")
+}
+
 model AiAgent {
+  enabledBuiltinTools Json? @map("enabled_builtin_tools")
+  publishedRevisionId String? @map("published_revision_id")
+  draftRevisionId String? @map("draft_revision_id")
+  publishedRevision AiAgentRevision? @relation("PublishedRevision", fields: [publishedRevisionId], references: [id], onDelete: SetNull)
+  draftRevision AiAgentRevision? @relation("DraftRevision", fields: [draftRevisionId], references: [id], onDelete: SetNull)
+  revisions AiAgentRevision[] @relation("AgentRevisions")
   id             String  @id @default(cuid())
   organizationId String  @map("organization_id")
   name           String
@@ -1238,6 +1270,8 @@ model AiAgentMemory {
 }
 
 model AiAgentRun {
+  revisionId String? @map("revision_id")
+  revision AiAgentRevision? @relation(fields: [revisionId], references: [id], onDelete: SetNull)
   id               String  @id @default(cuid())
   organizationId   String  @map("organization_id")
   conversationId   String  @map("conversation_id")

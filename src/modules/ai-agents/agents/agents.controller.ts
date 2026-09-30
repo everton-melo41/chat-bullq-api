@@ -1,3 +1,5 @@
+import { AgentRevisionsService } from './revisions.service';
+import { IsOptional, IsString, MaxLength } from 'class-validator';
 import { ToolRegistry } from '../tools/tool-registry.service';
 import {
   Body,
@@ -7,6 +9,8 @@ import {
   Param,
   Patch,
   Post,
+  Put,
+  ParseIntPipe,
   Query,
   UseGuards,
 } from '@nestjs/common';
@@ -16,25 +20,29 @@ import { AgentsService } from './agents.service';
 import { CreateAgentDto } from './dto/create-agent.dto';
 import { UpdateAgentDto } from './dto/update-agent.dto';
 import { AssignAgentChannelDto } from './dto/assign-channel.dto';
-import { CurrentOrg, Roles } from '../../../common/decorators';
+import { CurrentOrg, CurrentUser, Roles } from '../../../common/decorators';
 import {
   JwtAuthGuard,
   OrgGuard,
   RolesGuard,
 } from '../../../common/guards';
 
+class PublishAgentDto {
+  @IsOptional() @IsString() @MaxLength(2000) note?: string;
+}
+
 @ApiTags('AI Agents')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, OrgGuard, RolesGuard)
 @Controller('ai-agents')
 export class AgentsController {
-  constructor(private readonly service: AgentsService, private readonly registry: ToolRegistry) {}
+  constructor(private readonly service: AgentsService, private readonly registry: ToolRegistry, private readonly revisions: AgentRevisionsService) {}
 
   @Post()
   @Roles(OrgRole.OWNER, OrgRole.ADMIN)
   @ApiOperation({ summary: 'Create a new AI agent' })
-  create(@CurrentOrg('id') orgId: string, @Body() dto: CreateAgentDto) {
-    return this.service.create(orgId, dto);
+  create(@CurrentOrg('id') orgId: string, @Body() dto: CreateAgentDto, @CurrentUser('id') userId: string) {
+    return this.service.create(orgId, dto, userId);
   }
 
   @Get()
@@ -51,13 +59,42 @@ export class AgentsController {
 
   @Patch(':id')
   @Roles(OrgRole.OWNER, OrgRole.ADMIN)
-  @ApiOperation({ summary: 'Update an AI agent' })
+  @ApiOperation({ summary: 'Save agent changes to draft (requires explicit publication)' })
   update(
     @CurrentOrg('id') orgId: string,
     @Param('id') id: string,
     @Body() dto: UpdateAgentDto,
+    @CurrentUser('id') userId: string,
   ) {
-    return this.service.update(orgId, id, dto);
+    return this.service.update(orgId, id, dto, userId);
+  }
+
+  @Get(':id/revisions')
+  revisionsList(@CurrentOrg('id') org: string, @Param('id') id: string) {
+    return this.revisions.list(org, id);
+  }
+
+  @Put(':id/draft')
+  @Roles(OrgRole.OWNER, OrgRole.ADMIN)
+  saveDraft(@CurrentOrg('id') org: string, @Param('id') id: string, @Body() dto: UpdateAgentDto, @CurrentUser('id') user: string) {
+    return this.revisions.save(org, id, dto, user);
+  }
+
+  @Post(':id/publish')
+  @Roles(OrgRole.OWNER, OrgRole.ADMIN)
+  publish(@CurrentOrg('id') org: string, @Param('id') id: string, @Body() dto: PublishAgentDto) {
+    return this.revisions.publish(org, id, dto.note);
+  }
+
+  @Post(':id/revisions/:version/restore')
+  @Roles(OrgRole.OWNER, OrgRole.ADMIN)
+  restore(@CurrentOrg('id') org: string, @Param('id') id: string, @Param('version', ParseIntPipe) version: number, @CurrentUser('id') user: string) {
+    return this.revisions.restore(org, id, version, user);
+  }
+
+  @Get(':id/revisions/diff')
+  diff(@CurrentOrg('id') org: string, @Param('id') id: string, @Query('from', ParseIntPipe) from: number, @Query('to', ParseIntPipe) to: number) {
+    return this.revisions.diff(org, id, from, to);
   }
 
   @Delete(':id')
@@ -101,7 +138,7 @@ export class AgentsController {
   @Get(':id/built-in-actions')
   async builtInActions(@CurrentOrg('id') orgId: string, @Param('id') id: string) {
     const agent = await this.service.findOne(orgId, id);
-    return this.registry.getLlmDefinitionsForKind(agent.kind, agent.id).map(({ name, description }) => ({ name, description }));
+    return this.registry.getLlmDefinitionsForKind((agent.draftRevision?.snapshot as any)?.kind ?? agent.kind, agent.id).map(({ name, description }) => ({ name, description }));
   }
 
   @Get(':id/skills')
@@ -126,12 +163,14 @@ export class AgentsController {
     @Param('id') id: string,
     @Param('skillId') skillId: string,
     @Body() body: { requiresApproval: boolean },
+    @CurrentUser('id') userId: string,
   ) {
     return this.service.setSkillApproval(
       orgId,
       id,
       skillId,
       Boolean(body?.requiresApproval),
+      userId,
     );
   }
 

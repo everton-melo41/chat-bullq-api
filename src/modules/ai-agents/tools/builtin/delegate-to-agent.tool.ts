@@ -86,6 +86,7 @@ export class DelegateToAgentTool implements AiTool {
         id: targetAgentId,
         organizationId: ctx.organizationId,
         isActive: true,
+        publishedRevisionId: { not: null },
         deletedAt: null,
       },
       select: { id: true, name: true, kind: true },

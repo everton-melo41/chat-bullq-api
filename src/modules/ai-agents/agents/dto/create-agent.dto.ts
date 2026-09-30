@@ -16,6 +16,12 @@ import {
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateAgentDto {
+  @ApiPropertyOptional({ type: [String], nullable: true })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  enabledBuiltinTools?: string[] | null;
+
   @ApiProperty({ example: 'Atendente de Vendas' })
   @IsString()
   @MinLength(2)

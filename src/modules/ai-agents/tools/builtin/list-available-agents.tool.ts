@@ -29,6 +29,7 @@ export class ListAvailableAgentsTool implements AiTool {
         organizationId: ctx.organizationId,
         kind: 'WORKER',
         isActive: true,
+        publishedRevisionId: { not: null },
         deletedAt: null,
         id: { not: ctx.agentId },
       },
