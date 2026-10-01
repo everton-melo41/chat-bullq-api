@@ -32,7 +32,18 @@ export class SendMediaTool implements AiTool {
 
     const id = createHash('sha256').update(`media:${ctx.runId}:${media.id}`).digest('hex').slice(0, 25);
     const existing = await this.prisma.message.findUnique({ where: { id } });
-    if (existing) return { output: { ok: true, messageId: id, alreadySent: true } };
+    const jobId = `agent-media-${id}`;
+    if (existing) {
+      if (existing.status === MessageStatus.QUEUED && !await this.outboundQueue.getJob(jobId)) {
+        await this.outboundQueue.add('send-outbound', {
+          messageId: id, channelId: ctx.channelId, contactExternalId: contactChannel.externalId,
+          message: { type: existing.type, content: existing.content },
+        }, { jobId, attempts: 3, backoff: { type: 'exponential', delay: 5_000 }, removeOnComplete: true, removeOnFail: false });
+      }
+      return { output: { ok: existing.status !== MessageStatus.FAILED, messageId: id,
+        alreadySent: [MessageStatus.SENT, MessageStatus.DELIVERED, MessageStatus.READ].includes(existing.status as any),
+        status: existing.status } };
+    }
 
     const type = MessageContentType[media.kind as keyof typeof MessageContentType] ?? MessageContentType.DOCUMENT;
     const caption = String(input.legenda ?? '').trim() || media.caption || undefined;
@@ -50,7 +61,7 @@ export class SendMediaTool implements AiTool {
     this.realtime.emitToConversation(ctx.conversationId, 'message:new', { message });
     await this.outboundQueue.add('send-outbound', {
       messageId: message.id, channelId: ctx.channelId, contactExternalId: contactChannel.externalId, message: { type, content },
-    }, { attempts: 3, backoff: { type: 'exponential', delay: 5_000 }, removeOnComplete: true, removeOnFail: false });
+    }, { jobId, attempts: 3, backoff: { type: 'exponential', delay: 5_000 }, removeOnComplete: true, removeOnFail: false });
 
     return { output: { ok: true, messageId: message.id, enviado: media.name } };
   }

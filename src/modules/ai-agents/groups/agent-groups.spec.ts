@@ -33,6 +33,21 @@ describe('roteamento de grupos', () => {
     expect(await router.selectAgent(conversation, 'Sobre AUXILIO-ACIDENTE')).toMatchObject({ agentId: 'renda' });
     expect(await router.selectAgent(conversation, 'Quero um bpcx qualquer')).toMatchObject({ agentId: 'initial' });
   });
+  it('inclui SUPORTE global e matéria do número com isolamento de organização', async () => {
+    const { router, prisma } = fixture();
+    prisma.aiAgent.findMany.mockImplementation(async ({ where }: any) => {
+      expect(where).toEqual({ organizationId: 'org', isActive: true, deletedAt: null, publishedRevisionId: { not: null },
+        groupMemberships: { some: { group: { organizationId: 'org' }, OR: [{ groupId: 'group' }, { group: { kind: 'SUPORTE' } }] } } });
+      return [{ id: 'support', name: 'Andamentos', publishedRevision: { snapshot: { modelParams: { activationKeywords: ['andamento'] } } } }];
+    });
+    expect(await router.selectAgent(conversation, 'Quero andamento')).toMatchObject({ agentId: 'support' });
+  });
+  it('SUPORTE atende também números sem matéria', async () => {
+    const { router, prisma } = fixture(null);
+    prisma.aiAgent.findMany.mockResolvedValue([{ id: 'support', name: 'Andamentos', publishedRevision: { snapshot: { modelParams: { activationKeywords: ['andamento'] } } } }]);
+    expect(await router.selectAgent(conversation, 'andamento')).toMatchObject({ agentId: 'support' });
+    expect(prisma.aiAgent.findMany.mock.calls[0][0].where).toMatchObject({ organizationId: 'org', isActive: true, deletedAt: null, publishedRevisionId: { not: null } });
+  });
   it('preserva agente ativo', async () => {
     const { router, classifier } = fixture();
     expect(await router.selectAgent({ ...conversation, activeAgentId: 'active' }, 'oi')).toMatchObject({ agentId: 'active' });
@@ -56,7 +71,7 @@ describe('edição de grupos', () => {
   const dto = { name: 'Escritório', initialAgentId: 'a', memberIds: ['a', 'b'] };
   function fixture() {
     const prisma: any = { $queryRaw: jest.fn(), aiAgent: { count: jest.fn().mockResolvedValue(2) },
-      aiAgentGroup: { findFirst: jest.fn().mockResolvedValue({ id: 'g' }), create: jest.fn().mockResolvedValue({ id: 'g' }), update: jest.fn().mockResolvedValue({ id: 'g' }) },
+      aiAgentGroup: { findMany: jest.fn().mockResolvedValue([]), delete: jest.fn(), findFirst: jest.fn().mockResolvedValue({ id: 'g' }), create: jest.fn().mockResolvedValue({ id: 'g' }), update: jest.fn().mockResolvedValue({ id: 'g' }) },
       aiAgentGroupMember: { deleteMany: jest.fn(), createMany: jest.fn() } };
     prisma.$transaction = jest.fn(work => work(prisma));
     return { prisma, service: new AgentGroupsService(prisma) };
@@ -66,6 +81,21 @@ describe('edição de grupos', () => {
     await service.save('org', dto);
     expect(prisma.aiAgent.count).toHaveBeenCalledWith({ where: { id: { in: ['a', 'b'] }, organizationId: 'org', deletedAt: null } });
     expect(prisma.aiAgentGroupMember.createMany).toHaveBeenCalledWith({ data: [{ groupId: 'g', agentId: 'a', order: 0 }, { groupId: 'g', agentId: 'b', order: 1 }] });
+  });
+  it('criação com agente existente remove origem vazia na mesma transação', async () => {
+    const { service, prisma } = fixture();
+    prisma.aiAgent.count.mockResolvedValue(1);
+    prisma.aiAgentGroup.findMany.mockResolvedValue([{ id: 'old', initialAgentId: 'a', members: [{ agentId: 'a' }] }]);
+    await service.save('org', { name: 'Nova', initialAgentId: 'a', memberIds: ['a'] });
+    expect(prisma.aiAgentGroup.delete).toHaveBeenCalledWith({ where: { id: 'old' } });
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+  });
+  it('salva tipo Suporte e mantém tipo quando cliente antigo não informa kind', async () => {
+    const { service, prisma } = fixture();
+    await service.save('org', { ...dto, kind: 'SUPORTE' });
+    expect(prisma.aiAgentGroup.create).toHaveBeenCalledWith({ data: expect.objectContaining({ kind: 'SUPORTE' }) });
+    await service.save('org', dto, 'g');
+    expect(prisma.aiAgentGroup.update.mock.calls[0][0].data).not.toHaveProperty('kind');
   });
   it('recusa inicial fora dos membros', async () => {
     const { service } = fixture();

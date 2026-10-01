@@ -177,7 +177,7 @@ export class AgentRouterService {
     if (haystack.trim().length === 0) return null;
     const agents = await this.prisma.aiAgent.findMany({
       where: { organizationId, isActive: true, deletedAt: null, publishedRevisionId: { not: null },
-        ...(groupId ? { groupMemberships: { some: { groupId } } } : {}) },
+        ...(groupId ? { groupMemberships: { some: { group: { organizationId }, OR: [{ groupId }, { group: { kind: 'SUPORTE' } }] } } } : {}) },
       select: { id: true, name: true, publishedRevision: { select: { snapshot: true } } },
       orderBy: { createdAt: 'asc' },
     });

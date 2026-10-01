@@ -1,5 +1,7 @@
+import { TestChatDto } from './dto/test-chat.dto';
+import { AgentGroupsService, MoveAgentGroupDto } from '../groups/agent-groups.service';
 import { AgentRevisionsService } from './revisions.service';
-import { AgentTestChatService, TestChatTurn } from '../mentions/agent-test-chat.service';
+import { AgentTestChatService } from '../mentions/agent-test-chat.service';
 import { MentionsService } from '../mentions/mentions.service';
 import { IsOptional, IsString, MaxLength } from 'class-validator';
 import { ToolRegistry } from '../tools/tool-registry.service';
@@ -38,11 +40,22 @@ class PublishAgentDto {
 @UseGuards(JwtAuthGuard, OrgGuard, RolesGuard)
 @Controller('ai-agents')
 export class AgentsController {
-  constructor(private readonly service: AgentsService, private readonly registry: ToolRegistry, private readonly revisions: AgentRevisionsService, private readonly mentions: MentionsService, private readonly testChat: AgentTestChatService) {}
+  constructor(private readonly service: AgentsService, private readonly registry: ToolRegistry, private readonly revisions: AgentRevisionsService, private readonly mentions: MentionsService, private readonly testChat: AgentTestChatService, private readonly groups: AgentGroupsService) {}
 
   @Post(':id/test-chat')
-  testChatTurn(@CurrentOrg('id') orgId: string, @Param('id') id: string, @Body() body: { messages: TestChatTurn[]; useDraft?: boolean }) {
-    return this.testChat.run(orgId, id, body?.messages ?? [], body?.useDraft !== false);
+  testChatTurn(@CurrentOrg('id') orgId: string, @Param('id') id: string, @Body() body: TestChatDto, @CurrentUser('id') userId: string) {
+    return this.testChat.run(orgId, id, body?.messages ?? [], body?.useDraft !== false, userId, body.sessionId);
+  }
+
+  @Post(':id/move-group')
+  @Roles(OrgRole.OWNER, OrgRole.ADMIN)
+  moveGroup(@CurrentOrg('id') org: string, @Param('id') id: string, @Body() dto: MoveAgentGroupDto) {
+    return this.groups.move(org, id, dto.groupId);
+  }
+
+  @Get(':id/test-usage')
+  testUsage(@CurrentOrg('id') org: string, @Param('id') id: string) {
+    return this.testChat.usage(org, id);
   }
 
   @Get('mention-options')

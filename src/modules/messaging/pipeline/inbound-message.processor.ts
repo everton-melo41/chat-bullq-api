@@ -771,6 +771,7 @@ export class InboundMessageProcessor extends WorkerHost {
       await this.agentRunner.run({
         conversation: conv,
         triggerMessage: latestInbound,
+        batchId: latestInbound.id,
       });
 
       // IA respondeu (ou pelo menos o run terminou sem throw) — limpa o

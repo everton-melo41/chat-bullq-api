@@ -83,3 +83,58 @@ describe('continuação de grupos sob mutex', () => {
     expect(f.prisma.aiAgentRun.create).not.toHaveBeenCalled();
   });
 });
+
+describe('recuperação de lote debounced', () => {
+  it('persiste identidade e não cria nem executa outro run concluído no retry', async () => {
+    const f = fixture(true);
+    f.runner.llm.complete.mockResolvedValue({ usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 }, stopReason: 'stop', message: { role: 'assistant', content: '' } });
+    const runs = new Map<string, any>();
+    (f.prisma.aiAgentRun as any).findUnique = jest.fn(async ({ where }) => runs.get(where.batchKey) ?? null);
+    f.prisma.aiAgentRun.create.mockImplementation(async ({ data }: any) => {
+      const run = { id: 'persisted', ...data }; runs.set(data.batchKey, run); return run;
+    });
+    f.prisma.aiAgentRun.update.mockImplementation(async ({ data }: any) => {
+      const run = [...runs.values()][0]; Object.assign(run, data); return run;
+    });
+    const input = { ...f.input, batchId: 'inbound' };
+    await f.runner.run(input);
+    // O processo caiu depois da conclusão, antes de limpar due no Redis.
+    await f.runner.run(input);
+    expect(f.prisma.aiAgentRun.create).toHaveBeenCalledTimes(1);
+    expect(f.prisma.aiAgentRun.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ batchKey: 'conv/inbound/0' }) }));
+    expect(f.runner.llm.complete).toHaveBeenCalledTimes(1);
+  });
+  it('não consulta roteador nem LLM para resposta concluída', async () => {
+    const f = fixture();
+    (f.prisma.aiAgentRun as any).findUnique = jest.fn().mockResolvedValue({ id: 'old', status: 'COMPLETED', finalAction: 'REPLIED' });
+    await f.runner.run({ ...f.input, batchId: 'inbound' });
+    expect(f.runner.agentRouter.selectAgent).not.toHaveBeenCalled();
+    expect(f.prisma.aiAgentRun.create).not.toHaveBeenCalled();
+  });
+  it('retoma run incompleto com mesmo id, agente, revisão e consumo anterior', async () => {
+    const f = fixture();
+    const previous = { id: 'old', agentId: 'a', revisionId: 'pinned', status: 'RUNNING', inputTokens: 10, outputTokens: 5, costUsd: 0.1 };
+    (f.prisma.aiAgentRun as any).findUnique = jest.fn().mockResolvedValue(previous);
+    f.prisma.aiAgentRun.update.mockImplementation(async ({ data }: any) => ({ ...previous, ...data }));
+    f.runner.llm.complete.mockResolvedValue({ usage: { inputTokens: 2, outputTokens: 1, costUsd: 0.01, cacheReadTokens: 0, cacheWriteTokens: 0 }, stopReason: 'stop', message: { role: 'assistant', content: '' } });
+    await f.runner.run({ ...f.input, batchId: 'inbound' });
+    expect(f.prisma.aiAgentRun.create).not.toHaveBeenCalled();
+    expect(f.runner.agentRouter.selectAgent).not.toHaveBeenCalled();
+    expect(f.prisma.aiAgentRevision.findFirst).toHaveBeenCalledWith({ where: { id: 'pinned', agentId: 'a', organizationId: 'org' } });
+    expect(f.prisma.aiAgentRun.update).toHaveBeenLastCalledWith({ where: { id: 'old' }, data: expect.objectContaining({ status: 'COMPLETED', inputTokens: 12, outputTokens: 6, costUsd: 0.11 }) });
+  });
+  it('cadeia já concluída não repete delegação nem resposta de destino', async () => {
+    const f = fixture();
+    (f.prisma.aiAgentRun as any).findUnique = jest.fn(async ({ where }) => ({ id: where.batchKey, status: 'COMPLETED', finalAction: where.batchKey.endsWith('/0') ? 'DELEGATED' : 'REPLIED' }));
+    await f.runner.run({ ...f.input, batchId: 'inbound' });
+    expect(f.prisma.aiAgentRun.create).not.toHaveBeenCalled();
+    expect(f.runner.llm.complete).not.toHaveBeenCalled();
+    expect((f.prisma.aiAgentRun as any).findUnique).toHaveBeenCalledTimes(2);
+  });
+  it('novo inbound tem identidade independente', async () => {
+    const f = fixture(true);
+    (f.prisma.aiAgentRun as any).findUnique = jest.fn(async ({ where }) => where.batchKey === 'conv/inbound/0' ? { status: 'COMPLETED', finalAction: 'REPLIED' } : null);
+    await f.runner.run({ ...f.input, batchId: 'inbound2', triggerMessage: { id: 'inbound2', content: { text: 'mais' } } });
+    expect(f.prisma.aiAgentRun.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ batchKey: 'conv/inbound2/0' }) }));
+  });
+});

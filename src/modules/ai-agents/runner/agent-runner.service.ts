@@ -73,6 +73,8 @@ interface RunInput {
    * forth. Set automatically on chained calls, callers shouldn't pass this.
    */
   chainDepth?: number;
+  /** Último inbound do lote debounced; persistido no run. */
+  batchId?: string;
 }
 
 const MAX_CHAIN_DEPTH = MAX_HANDOFF_DEPTH;
@@ -139,11 +141,27 @@ export class AiAgentRunnerService {
     conversation,
     triggerMessage,
     chainDepth = 0,
+    batchId,
   }: RunInput): Promise<void> {
+    const batchKey = batchId ? `${conversation.id}/${batchId}/${chainDepth}` : undefined;
+    const previous = batchKey ? await this.prisma.aiAgentRun.findUnique({ where: { batchKey } }) : null;
+    if (previous?.status === AiRunStatus.COMPLETED) {
+      // Uma delegação concluída pode ter caído antes de iniciar o próximo elo.
+      if (previous.finalAction === AiFinalAction.DELEGATED && chainDepth < MAX_CHAIN_DEPTH) {
+        const handoff = await this.prisma.aiAgentHandoff.findFirst({
+          where: { conversationId: conversation.id, triggerMessageId: triggerMessage.id },
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        });
+        if (!handoff?.entryQuestion) await this.runChain({ conversation, triggerMessage, batchId, chainDepth: chainDepth + 1 });
+      }
+      return;
+    }
     // Fase 2: usa o agentRouter (com IntentClassifier) pra escolher o agent.
     // Auto-chains (chainDepth > 0) NÃO classificam de novo — já tem activeAgentId.
     let selection: AgentSelection | null = null;
-    if (chainDepth === 0) {
+    if (previous) {
+      selection = { agentId: previous.agentId } as AgentSelection;
+    } else if (chainDepth === 0) {
       const triggerText = this.extractText(
         (triggerMessage.content as unknown) ?? '',
       );
@@ -183,8 +201,9 @@ export class AiAgentRunnerService {
     }
 
     // Pin the published revision once for the entire run, including dispatch.
-    const revision = agent.publishedRevisionId ? await this.prisma.aiAgentRevision.findFirst({
-      where: { id: agent.publishedRevisionId, agentId: agent.id, organizationId: conversation.organizationId },
+    const revisionId = previous?.revisionId ?? agent.publishedRevisionId;
+    const revision = revisionId ? await this.prisma.aiAgentRevision.findFirst({
+      where: { id: revisionId, agentId: agent.id, organizationId: conversation.organizationId },
     }) : null;
     if (!revision) return; // New agents remain inert until first publication.
     const snapshot = revision.snapshot as any;
@@ -223,12 +242,15 @@ export class AiAgentRunnerService {
         this.catalogSync.getCompactCatalog(conversation.organizationId),
       ]);
 
-    const run = await this.prisma.aiAgentRun.create({
+    const run = previous ? await this.prisma.aiAgentRun.update({
+      where: { id: previous.id }, data: { status: AiRunStatus.RUNNING, errorMessage: null, finishedAt: null },
+    }) : await this.prisma.aiAgentRun.create({
       data: {
         organizationId: conversation.organizationId,
         conversationId: conversation.id,
         agentId: agent.id,
         triggerMessageId: triggerMessage.id,
+        batchKey,
         revisionId: revision.id,
         modelId: agent.modelId,
         status: AiRunStatus.RUNNING,
@@ -333,11 +355,11 @@ export class AiAgentRunnerService {
     const tools = llmTools;
 
     const aggregateUsage = {
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      costUsd: 0,
+      inputTokens: previous?.inputTokens ?? 0,
+      outputTokens: previous?.outputTokens ?? 0,
+      cacheReadTokens: previous?.cacheReadTokens ?? 0,
+      cacheWriteTokens: previous?.cacheWriteTokens ?? 0,
+      costUsd: Number(previous?.costUsd ?? 0),
     };
 
     let finalAction: AiFinalAction = AiFinalAction.NO_ACTION;
@@ -618,6 +640,7 @@ export class AiAgentRunnerService {
             conversation: refreshed,
             triggerMessage,
             chainDepth: chainDepth + 1,
+            batchId,
           }).catch((err) =>
             this.logger.error(
               `Auto-chain run failed for conv ${conversation.id}: ${err?.message ?? err}`,

@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { createHash } from 'node:crypto';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../../database/prisma.service';
 import { LlmToolDefinition } from '../llm/llm.types';
 
@@ -75,10 +76,15 @@ export class MentionsService {
 
     const invalid: ParsedMention[] = [];
     const bindings = new Map<string, MentionBinding>();
+    const identities = new Map<string, string>();
     let out = prompt;
     for (const m of mentions) {
       const binding = this.bind(m, found);
       if (!binding) { invalid.push(m); out = out.split(m.raw).join(m.label); continue; }
+      const identity = `${m.type}:${m.id}`;
+      const previous = identities.get(binding.toolName);
+      if (previous && previous !== identity) throw new BadRequestException(`Colisão de ferramentas: ${binding.toolName}`);
+      identities.set(binding.toolName, identity);
       bindings.set(binding.toolName, binding);
       out = out.split(m.raw).join(`${m.label} (ferramenta ${binding.toolName})`);
     }
@@ -90,8 +96,10 @@ export class MentionsService {
     department: Map<string, { id: string; name: string }>; stage: Map<string, { id: string; name: string; pipelineId: string }>;
     media: Map<string, { id: string; name: string; kind: string }>;
   }): MentionBinding | null {
+    const suffix = createHash('sha256').update(m.id).digest('hex').slice(0, 10);
     const make = (toolName: string, builtin: string, fixedArgs: Record<string, unknown>, description: string, parameters: Record<string, unknown>): MentionBinding =>
-      ({ toolName, builtin, fixedArgs, definition: { name: toolName, description, parameters } });
+      ({ toolName: `${m.type}_${toolName.slice(0, 64 - m.type.length - suffix.length - 2)}_${suffix}`, builtin, fixedArgs,
+        definition: { name: `${m.type}_${toolName.slice(0, 64 - m.type.length - suffix.length - 2)}_${suffix}`, description, parameters } });
     switch (m.type) {
       case 'agent': {
         const a = found.agent.get(m.id); if (!a) return null;

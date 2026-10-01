@@ -1277,6 +1277,7 @@ model AiAgentMemory {
 }
 
 model AiAgentRun {
+  batchKey         String?          @unique @map("batch_key")
   revisionId       String?          @map("revision_id")
   revision         AiAgentRevision? @relation(fields: [revisionId], references: [id], onDelete: SetNull)
   id               String           @id @default(cuid())
@@ -1834,7 +1835,13 @@ model AiActionReceipt {
   @@map("ai_action_receipts")
 }
 
+enum AiAgentGroupKind {
+  TESE
+  SUPORTE
+}
+
 model AiAgentGroup {
+  kind           AiAgentGroupKind     @default(TESE)
   id             String               @id @default(cuid())
   organizationId String               @map("organization_id")
   name           String
@@ -1876,4 +1883,21 @@ model AgentMedia {
 
   @@index([organizationId])
   @@map("agent_media")
+}
+
+/// Consumo do simulador, sem mensagens ou efeitos em conversas reais.
+model AiAgentTestUsage {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  agentId        String   @map("agent_id")
+  userId         String?  @map("user_id")
+  sessionId      String?  @map("session_id")
+  modelId        String   @map("model_id")
+  status         String   @default("RUNNING")
+  inputTokens    Int      @default(0) @map("input_tokens")
+  outputTokens   Int      @default(0) @map("output_tokens")
+  costUsd        Decimal  @default(0) @map("cost_usd") @db.Decimal(10, 6)
+  createdAt      DateTime @default(now()) @map("created_at")
+  @@index([organizationId, createdAt])
+  @@map("ai_agent_test_usage")
 }

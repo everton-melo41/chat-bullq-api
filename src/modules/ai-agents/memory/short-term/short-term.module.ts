@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 
-import { redisProvider } from './redis.provider';
+import { redisProvider, REDIS_CLIENT_TOKEN } from './redis.provider';
 import { ShortTermMemoryService } from './short-term.service';
 
 /**
@@ -13,6 +13,6 @@ import { ShortTermMemoryService } from './short-term.service';
 @Module({
   imports: [ConfigModule],
   providers: [redisProvider, ShortTermMemoryService],
-  exports: [ShortTermMemoryService],
+  exports: [ShortTermMemoryService, REDIS_CLIENT_TOKEN],
 })
 export class ShortTermMemoryModule {}

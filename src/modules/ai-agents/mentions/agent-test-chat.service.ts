@@ -1,4 +1,6 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import Redis from 'ioredis';
+import { REDIS_CLIENT_TOKEN } from '../memory/short-term/redis.provider';
+import { BadRequestException, HttpException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../../database/prisma.service';
 import { LlmService } from '../llm/llm.service';
 import { LlmMessage } from '../llm/llm.types';
@@ -10,7 +12,7 @@ export interface TestChatTurn { role: 'user' | 'assistant'; content: string }
  * Chat de teste do estúdio. Usa o prompt (rascunho ou publicado) com as
  * menções compiladas e o modelo do agente, mas NÃO executa nenhuma ação:
  * as ferramentas que o agente chamaria voltam como "simuladas". Nada é
- * gravado nem enviado a cliente. O histórico vem do navegador (sem estado).
+ * enviado a cliente. Apenas o consumo é registrado. O histórico vem do navegador (sem estado).
  */
 @Injectable()
 export class AgentTestChatService {
@@ -18,11 +20,17 @@ export class AgentTestChatService {
     private readonly prisma: PrismaService,
     private readonly llm: LlmService,
     private readonly mentions: MentionsService,
+    @Inject(REDIS_CLIENT_TOKEN) private readonly redis: Redis,
   ) {}
 
-  async run(organizationId: string, agentId: string, history: TestChatTurn[], useDraft: boolean) {
+  usage(organizationId: string, agentId: string) {
+    return this.prisma.aiAgentTestUsage.findMany({ where: { organizationId, agentId }, orderBy: { createdAt: 'desc' }, take: 100 });
+  }
+
+  async run(organizationId: string, agentId: string, history: TestChatTurn[], useDraft: boolean, userId?: string, sessionId?: string) {
     if (!Array.isArray(history) || !history.length) throw new BadRequestException('Envie ao menos uma mensagem');
     if (history.length > 100) throw new BadRequestException('Limite de 50 turnos por teste. Reinicie a conversa.');
+    if (history.some(t => !t || !['user', 'assistant'].includes(t.role) || typeof t.content !== 'string' || t.content.length > 4000)) throw new BadRequestException('Histórico inválido');
     const agent = await this.prisma.aiAgent.findFirst({
       where: { id: agentId, organizationId, deletedAt: null },
       include: { draftRevision: true, publishedRevision: true },
@@ -38,6 +46,20 @@ export class AgentTestChatService {
       ...history.map(t => ({ role: t.role, content: String(t.content ?? '').slice(0, 4000) }) as LlmMessage),
     ];
 
+    // Reserva atômica: a cota inclui tentativas com falha e expira no próximo dia UTC.
+    const now = new Date();
+    const day = now.toISOString().slice(0, 10);
+    const expiry = Math.floor(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1) / 1000);
+    const allowed = await this.redis.eval(`
+      local n = tonumber(redis.call('GET', KEYS[1]) or '0')
+      if n >= 300 then return 0 end
+      redis.call('INCR', KEYS[1])
+      redis.call('EXPIREAT', KEYS[1], ARGV[1])
+      return 1`, 1, `ai-test-daily:${organizationId}:${day}`, String(expiry));
+    if (Number(allowed) !== 1) throw new HttpException('Limite diário de 300 turnos de teste da organização atingido', 429);
+    const usage = await this.prisma.aiAgentTestUsage.create({ data: {
+      organizationId, agentId, userId, sessionId, modelId: String(snap.modelId ?? agent.modelId),
+    } });
     const started = Date.now();
     const res = await this.llm.complete({
       modelId: String(snap.modelId ?? agent.modelId),
@@ -45,7 +67,13 @@ export class AgentTestChatService {
       tools: compiled.bindings.map(b => b.definition),
       maxTokens: Math.min(Number(snap.maxTokens ?? 1024), 2048),
       temperature: Number(snap.temperature ?? 0.7),
+    }).catch(async error => {
+      await this.prisma.aiAgentTestUsage.update({ where: { id: usage.id }, data: { status: 'FAILED' } });
+      throw error;
     });
+    await this.prisma.aiAgentTestUsage.update({ where: { id: usage.id }, data: {
+      status: 'COMPLETED', inputTokens: res.usage.inputTokens, outputTokens: res.usage.outputTokens, costUsd: res.usage.costUsd,
+    } });
 
     const bindings = new Map(compiled.bindings.map(b => [b.toolName, b]));
     const actions = (res.message.toolCalls ?? []).map(call => {

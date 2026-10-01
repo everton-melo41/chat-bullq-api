@@ -28,7 +28,7 @@ describe('menções no prompt', () => {
     expect(byBuiltin.movePipelineCard.fixedArgs).toEqual({ pipelineId: 'pl1', stageId: 'st1' });
     // o id nunca aparece como parâmetro que o modelo possa preencher
     expect(JSON.stringify(byBuiltin.handoffToAgent.definition.parameters)).not.toContain('agentId');
-    expect(out.text).toContain('Auxílio-doença (ferramenta passar_para_auxilio_doenca)');
+    expect(out.text).toContain(`Auxílio-doença (ferramenta ${byBuiltin.handoffToAgent.toolName})`);
     expect(out.text).not.toContain('agent:ag1');
     expect(out.invalid).toEqual([]);
   });
@@ -36,7 +36,7 @@ describe('menções no prompt', () => {
   it('menção de mídia vira envio com id fixo', async () => {
     const { svc } = service();
     const out = await svc.compile('org', 'Envie @[Vídeo BPC](media:md1).');
-    expect(out.bindings[0]).toMatchObject({ builtin: 'sendMedia', fixedArgs: { mediaId: 'md1' }, toolName: 'enviar_video_bpc' });
+    expect(out.bindings[0]).toMatchObject({ builtin: 'sendMedia', fixedArgs: { mediaId: 'md1' }, toolName: expect.stringMatching(/^media_enviar_video_bpc_[a-f0-9]{10}$/) });
     expect(out.bindings[0].definition.description).toContain('o vídeo');
   });
 
@@ -53,5 +53,34 @@ describe('menções no prompt', () => {
     const out = await svc.compile('org', 'Prompt comum.');
     expect(out).toEqual({ text: 'Prompt comum.', bindings: [], invalid: [] });
     expect(prisma.aiAgent.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('identidade das ferramentas', () => {
+  it('mantém etapas homônimas de funis diferentes e nomes normalizados sem colisão', async () => {
+    const { svc, prisma } = service();
+    prisma.pipelineStage.findMany.mockResolvedValue([
+      { id: 'st1', name: 'Qualificado', pipelineId: 'pl1' },
+      { id: 'st2', name: 'Qualificado', pipelineId: 'pl2' },
+      { id: 'st3', name: 'Qualificádo', pipelineId: 'pl3' },
+    ]);
+    const prompt = '@[Qualificado](stage:st1) @[Qualificado](stage:st2) @[Qualificádo](stage:st3) @[Qualificado](stage:st1)';
+    const result = await svc.compile('org', prompt);
+    expect(result.bindings).toHaveLength(3);
+    expect(new Set(result.bindings.map(b => b.toolName)).size).toBe(3);
+    expect(result.bindings.map(b => b.fixedArgs.pipelineId)).toEqual(['pl1', 'pl2', 'pl3']);
+    expect((await svc.compile('org', prompt)).bindings).toEqual(result.bindings);
+    expect(result.bindings.every(b => b.toolName.length <= 64)).toBe(true);
+  });
+  it('recusa colisão residual em vez de sobrescrever o destino', async () => {
+    const { svc } = service();
+    jest.spyOn(svc as any, 'bind').mockReturnValue({ toolName: 'colisao', builtin: 'addTag', fixedArgs: {}, definition: {} });
+    await expect(svc.compile('org', '@[A](tag:a) @[B](tag:b)')).rejects.toThrow('Colisão');
+  });
+  it('mantém agente publicado fora da matéria como destino permitido', async () => {
+    const { svc, prisma } = service();
+    const result = await svc.compile('org', '@[Suporte](agent:ag1)');
+    expect(result.bindings[0].fixedArgs).toEqual({ agentId: 'ag1' });
+    expect(prisma.aiAgent.findMany.mock.calls[0][0].where).toEqual({ id: { in: ['ag1'] }, organizationId: 'org', deletedAt: null, isActive: true, publishedRevisionId: { not: null } });
   });
 });
