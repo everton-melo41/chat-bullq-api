@@ -107,6 +107,7 @@ export class VectorStoreService {
     k = 5,
     minScore = 0.7,
   ): Promise<SearchResult[]> {
+    if (scope.ownerIds?.length === 0) return [];
     const vec = this.toVectorLiteral(queryVector);
 
     const filters: string[] = [];
@@ -128,6 +129,11 @@ export class VectorStoreService {
     if (scope.ownerType && scope.ownerType !== 'any') {
       filters.push(`owner_type = $${p++}`);
       params.push(scope.ownerType);
+    }
+
+    if (scope.ownerIds) {
+      filters.push(`owner_id = ANY($${p++}::text[])`);
+      params.push(scope.ownerIds);
     }
 
     const where = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : '';

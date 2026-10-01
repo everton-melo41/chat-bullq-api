@@ -1,3 +1,5 @@
+import { KnowledgeModule } from '../knowledge/knowledge.module';
+import { SearchKnowledgeTool } from './builtin/search-knowledge.tool';
 import { HandoffToAgentTool } from './builtin/handoff-to-agent.tool';
 import { SendMediaTool } from './builtin/send-media.tool';
 import { AddTagTool, CreateInternalSummaryTool, UpdateContactFieldsTool, MovePipelineCardTool, AssignConversationTool } from './builtin/studio-actions.tools';
@@ -38,6 +40,7 @@ import { SalesRecoveryModule } from '../../sales-recovery/sales-recovery.module'
 
 @Module({
   imports: [
+    KnowledgeModule,
     ConfigModule,
     PipelinesModule,
     PrismaModule,
@@ -47,6 +50,7 @@ import { SalesRecoveryModule } from '../../sales-recovery/sales-recovery.module'
     BullModule.registerQueue({ name: 'outbound-messages' }),
   ],
   providers: [
+    SearchKnowledgeTool,
     StudioActionsService,
     SendMediaTool,
     AddTagTool,

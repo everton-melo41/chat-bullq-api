@@ -1,3 +1,5 @@
+import { KnowledgeService } from '../knowledge/knowledge.service';
+import { knowledgeBinding, knowledgePrompt } from '../knowledge/knowledge.binding';
 import { IdempotencyService } from '../../messaging/pipeline/idempotency.service';
 import { handoffLimit, MAX_HANDOFF_DEPTH } from '../tools/builtin/handoff-to-agent.tool';
 import { Injectable, Logger, Optional } from '@nestjs/common';
@@ -122,6 +124,7 @@ export class AiAgentRunnerService {
     private readonly ragIndexerQueue: Queue,
     private readonly idempotency: IdempotencyService,
     @Optional() private readonly mentions?: MentionsService,
+    @Optional() private readonly knowledge?: KnowledgeService,
   ) {}
 
   async run(input: RunInput): Promise<void> {
@@ -284,10 +287,18 @@ export class AiAgentRunnerService {
     // runner can hand them to HttpToolExecutor on tool-call time.
     const { llmTools, customSkillsByName, skillInstructions } =
       await this.resolveToolsAndSkills(agent.id, agent.kind, enabledBuiltinTools, skillBindings, conversation.organizationId);
-    if (mentionBindings.size) {
+    const hasPromptMentions = mentionBindings.size > 0;
+    const knowledgeDocs = this.knowledge ? await this.knowledge.linked(conversation.organizationId, agent.id, true) : [];
+    if (knowledgeDocs.length) {
+      mentionBindings.set(knowledgeBinding.toolName, knowledgeBinding);
+      agent = { ...agent, systemPrompt: agent.systemPrompt + knowledgePrompt(knowledgeDocs) };
+    }
+    if (hasPromptMentions) {
       const keep = llmTools.filter(t => t.name === 'replyToConversation' || customSkillsByName.has(t.name));
       llmTools.splice(0, llmTools.length, ...keep, ...[...mentionBindings.values()].map(b => b.definition));
     }
+
+    if (knowledgeDocs.length && !llmTools.some(t => t.name === knowledgeBinding.toolName)) llmTools.push(knowledgeBinding.definition);
 
     const receivedHandoff = await this.prisma.aiAgentHandoff.findFirst({
       where: { conversationId: conversation.id }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],

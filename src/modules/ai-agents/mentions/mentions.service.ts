@@ -1,3 +1,4 @@
+import { knowledgeBinding } from '../knowledge/knowledge.binding';
 import { createHash } from 'node:crypto';
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../../database/prisma.service';
@@ -12,6 +13,7 @@ import { LlmToolDefinition } from '../llm/llm.types';
 export type MentionType = 'agent' | 'tag' | 'department' | 'stage' | 'action' | 'media';
 
 export const MENTION_ACTIONS: Record<string, { label: string; description: string }> = {
+  library: { label: 'biblioteca', description: 'Consulta a base de conhecimento vinculada ao agente.' },
   summary: { label: 'resumo', description: 'Gera um resumo da conversa como nota interna para a equipe.' },
   savedata: { label: 'salvar dados do lead', description: 'Salva dados informados pelo lead no cadastro (nome, e-mail, CPF, data de nascimento, cidade, UF, profissão, benefício pretendido, observações).' },
   disableai: { label: 'desativar IA', description: 'Desliga a IA nesta conversa; a equipe assume.' },
@@ -126,6 +128,7 @@ export class MentionsService {
       }
       case 'action': {
         const a = MENTION_ACTIONS[m.id]; if (!a) return null;
+        if (m.id === 'library') return knowledgeBinding;
         if (m.id === 'summary') return make('resumo', 'createInternalSummary', {}, a.description, obj({ content: text('Resumo objetivo para a equipe.', 10000) }, ['content']));
         if (m.id === 'savedata') {
           const fields = Object.fromEntries(['name', 'email', 'cpf', 'dataNascimento', 'cidade', 'uf', 'profissao', 'beneficioPretendido', 'observacoes'].map(k => [k, { type: 'string' }]));

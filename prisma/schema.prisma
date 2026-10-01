@@ -135,6 +135,7 @@ model User {
 }
 
 model Organization {
+  knowledgeDocuments KnowledgeDocument[]
   aiAgentGroups AiAgentGroup[]
   id            String         @id @default(cuid())
   name          String
@@ -1015,6 +1016,7 @@ model AiAgentRevision {
 }
 
 model AiAgent {
+  knowledgeDocuments KnowledgeDocumentAgent[]
   entryQuestion       String?              @map("entry_question")
   groupMemberships    AiAgentGroupMember[]
   initialForGroups    AiAgentGroup[]       @relation("GroupInitialAgent")
@@ -1900,4 +1902,46 @@ model AiAgentTestUsage {
   createdAt      DateTime @default(now()) @map("created_at")
   @@index([organizationId, createdAt])
   @@map("ai_agent_test_usage")
+}
+
+
+enum KnowledgeSourceType {
+  TEXT
+  MARKDOWN
+  PDF
+}
+
+enum KnowledgeStatus {
+  PROCESSING
+  READY
+  FAILED
+}
+
+model KnowledgeDocument {
+  id String @id @default(cuid())
+  organizationId String @map("organization_id")
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  title String
+  sourceType KnowledgeSourceType @map("source_type")
+  fileName String? @map("file_name")
+  content String @db.Text
+  status KnowledgeStatus @default(PROCESSING)
+  error String? @db.Text
+  chunkCount Int @default(0) @map("chunk_count")
+  sizeChars Int @map("size_chars")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  agents KnowledgeDocumentAgent[]
+  @@index([organizationId])
+  @@map("knowledge_documents")
+}
+
+model KnowledgeDocumentAgent {
+  documentId String @map("document_id")
+  agentId String @map("agent_id")
+  document KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  agent AiAgent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  @@id([documentId, agentId])
+  @@index([agentId])
+  @@map("knowledge_document_agents")
 }

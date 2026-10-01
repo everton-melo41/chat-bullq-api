@@ -1,3 +1,4 @@
+import { SearchKnowledgeTool } from './builtin/search-knowledge.tool';
 import { HandoffToAgentTool } from './builtin/handoff-to-agent.tool';
 import { SendMediaTool } from './builtin/send-media.tool';
 import { AddTagTool, CreateInternalSummaryTool, UpdateContactFieldsTool, MovePipelineCardTool, AssignConversationTool } from './builtin/studio-actions.tools';
@@ -66,9 +67,11 @@ export class ToolRegistry {
     moveRecoveryCard: MoveRecoveryCardTool,
     handoff: HandoffToAgentTool,
     @Optional() sendMedia?: SendMediaTool,
+    @Optional() searchKnowledge?: SearchKnowledgeTool,
   ) {
     // Só via menção @[mídia](media:id): sem kinds, nunca aparece solta para o modelo.
     if (sendMedia) this.register(sendMedia, []);
+    if (searchKnowledge) this.register(searchKnowledge, []);
     this.register(handoff, ['ORCHESTRATOR', 'WORKER']);
     this.register(addTagTool, ['ORCHESTRATOR', 'WORKER']);
     this.register(createInternalSummaryTool, ['ORCHESTRATOR', 'WORKER']);

@@ -39,7 +39,7 @@ describe('limite e consumo do chat de teste', () => {
   it('falha do modelo permanece auditável e não devolve a reserva', async () => {
     const f = fixture(); f.llm.complete.mockRejectedValue(new Error('provider'));
     await expect(f.svc.run('org', 'agent', turns, true)).rejects.toThrow('provider');
-    expect(f.prisma.aiAgentTestUsage.update).toHaveBeenCalledWith({ where: { id: 'usage' }, data: { status: 'FAILED' } });
+    expect(f.prisma.aiAgentTestUsage.update).toHaveBeenCalledWith({ where: { id: 'usage' }, data: expect.objectContaining({ status: 'FAILED' }) });
     expect(f.redis.eval).toHaveBeenCalledTimes(1);
   });
   it('não permite testar agente inacessível', async () => {
@@ -60,5 +60,21 @@ describe('limite e consumo do chat de teste', () => {
   it('DTO aceita user/assistant, 100 itens e 4000 caracteres', async () => {
     const messages = Array.from({ length: 100 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: 'a'.repeat(4000) }));
     expect(await validate(plainToInstance(TestChatDto, { messages, useDraft: false, sessionId: 'session' }))).toEqual([]);
+  });
+});
+
+describe('base de conhecimento no chat de teste', () => {
+  it('expõe automaticamente e executa consulta real com escopo da execução', async () => {
+    const f = fixture();
+    const result = { message: 'Material de referência', excerpts: [{ title: 'Manual', section: 'Direitos', content: 'Trecho encontrado', score: .9 }] };
+    const knowledge: any = { linked: jest.fn().mockResolvedValue([{ title: 'Manual' }]), search: jest.fn().mockResolvedValue(result) };
+    const mentions: any = { compile: jest.fn().mockResolvedValue({ text: 'Prompt', bindings: [], invalid: [] }) };
+    f.llm.complete.mockResolvedValue({ message: { content: '', toolCalls: [{ name: 'consultar_base_de_conhecimento', arguments: { pergunta: 'Direitos?' } }] }, usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 } });
+    const svc = new AgentTestChatService(f.prisma, f.llm, mentions, f.redis, knowledge);
+    const response = await svc.run('org', 'agent', turns, true);
+    expect(f.llm.complete.mock.calls[0][0].tools).toEqual([expect.objectContaining({ name: 'consultar_base_de_conhecimento' })]);
+    expect(f.llm.complete.mock.calls[0][0].messages[0].content).toContain('Manual');
+    expect(knowledge.search).toHaveBeenCalledWith('org', 'agent', 'Direitos?');
+    expect(response.actions[0]).toMatchObject({ simulated: false, result });
   });
 });

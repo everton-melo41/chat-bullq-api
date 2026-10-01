@@ -1,3 +1,5 @@
+import { KnowledgeModule } from './knowledge/knowledge.module';
+import { KnowledgeController } from './knowledge/knowledge.controller';
 import { IdempotencyService } from '../messaging/pipeline/idempotency.service';
 import { AgentGroupsController } from './groups/agent-groups.controller';
 import { AgentGroupsService } from './groups/agent-groups.service';
@@ -39,6 +41,7 @@ import { EvalsModule } from './evals/evals.module';
 
 @Module({
   imports: [
+    KnowledgeModule,
     ConfigModule,
     PrismaModule,
     LlmModule,
@@ -56,7 +59,7 @@ import { EvalsModule } from './evals/evals.module';
     EvalsModule,
   ],
   // AgentMediaController antes de AgentsController: /ai-agents/media não pode cair em /ai-agents/:id.
-  controllers: [AgentMediaController, AgentGroupsController, AgentsController, AiCatalogController],
+  controllers: [KnowledgeController, AgentMediaController, AgentGroupsController, AgentsController, AiCatalogController],
   providers: [
     IdempotencyService,
     AgentGroupsService,
